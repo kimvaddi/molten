@@ -1,0 +1,51 @@
+name: Deploy Agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/agent/**"
+  workflow_dispatch:
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  CONTAINER_APP_NAME: ${{ secrets.CONTAINER_APP_NAME }}
+  RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Build and Push to ACR
+        working-directory: src/agent
+        run: |
+          az acr build \
+            --registry ${{ env.ACR_NAME }} \
+            --image moltbot-agent:${{ github.sha }} \
+            --image moltbot-agent:latest \
+            .
+
+      - name: Deploy to Container Apps
+        run: |
+          az containerapp update \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/moltbot-agent:${{ github.sha }}
+
+      - name: Verify Deployment
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Deployed to: https://$FQDN"
+          curl -sf "https://$FQDN/healthz" || exit 1

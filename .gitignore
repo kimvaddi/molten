@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+*.js.map
+*.d.ts
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+
+# Azure Functions
+local.settings.json
+.python_packages/
+__pycache__/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (never commit)
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/

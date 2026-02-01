@@ -1,0 +1,62 @@
+name: Deploy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+env:
+  TF_WORKING_DIR: infra/terraform
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.0"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform Plan
+        if: inputs.action == 'plan' || inputs.action == 'apply'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform plan \
+            -var="azure_openai_endpoint=${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+            -var="azure_openai_api_key=${{ secrets.AZURE_OPENAI_API_KEY }}" \
+            -var="telegram_bot_token=${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        if: inputs.action == 'apply'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Terraform Destroy
+        if: inputs.action == 'destroy'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform destroy -auto-approve \
+            -var="azure_openai_endpoint=${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+            -var="azure_openai_api_key=${{ secrets.AZURE_OPENAI_API_KEY }}" \
+            -var="telegram_bot_token=${{ secrets.TELEGRAM_BOT_TOKEN }}"

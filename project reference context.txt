@@ -1,0 +1,348 @@
+Below is a **ready-to-clone GitHub repository layout** for the Azure version of your Moltbot/Moltworker solution. It’s structured for **minimal cost**, **strong security defaults**, and **smooth CI/CD** to Azure (Functions + Container Apps), using the Terraform you asked me to generate.
+
+***
+
+## 🗂️ Repository structure
+
+    moltbot-azure/
+    ├── README.md
+    ├── .gitignore
+    ├── .gitattributes
+    ├── docs/
+    │   ├── architecture-diagram.md
+    │   ├── security-baseline.md
+    │   ├── runbook-operations.md
+    │   └── threat-model.md
+    ├── infra/
+    │   ├── terraform/
+    │   │   ├── providers.tf
+    │   │   ├── variables.tf
+    │   │   ├── main.tf
+    │   │   └── outputs.tf
+    │   └── scripts/
+    │       ├── bootstrap-azure.sh
+    │       └── destroy-azure.sh
+    ├── src/
+    │   ├── functions/                   # Azure Functions (webhooks + admin API)
+    │   │   ├── host.json
+    │   │   ├── local.settings.json.example
+    │   │   ├── package.json
+    │   │   ├── tsconfig.json
+    │   │   └── Http*                    # each function is its own folder
+    │   │       ├── function.json
+    │   │       └── index.ts
+    │   ├── agent/                       # Container Apps runtime (Moltbot gateway)
+    │   │   ├── Dockerfile
+    │   │   ├── package.json
+    │   │   ├── tsconfig.json
+    │   │   ├── src/
+    │   │   │   ├── index.ts             # service bootstrap (HTTP/WS control UI)
+    │   │   │   ├── queue-worker.ts      # Storage Queue consumer
+    │   │   │   ├── integrations/
+    │   │   │   │   ├── telegram.ts
+    │   │   │   │   ├── slack.ts
+    │   │   │   │   └── discord.ts
+    │   │   │   ├── llm/
+    │   │   │   │   ├── azureOpenAI.ts   # model client (gpt-4o-mini default)
+    │   │   │   │   └── safety.ts        # pre/post content filters
+    │   │   │   ├── state/
+    │   │   │   │   ├── blobStore.ts     # attachments/config
+    │   │   │   │   └── tableStore.ts    # conv/session metadata
+    │   │   │   └── utils/
+    │   │   │       ├── cache.ts         # hash/semantic cache to reduce AOAI spend
+    │   │   │       └── auth.ts          # JWT/session helpers
+    │   │   └── web/
+    │   │       ├── public/
+    │   │       └── src/                 # optional minimal control UI
+    │   └── shared/                      # shared lib for both Functions & agent
+    │       ├── logger.ts
+    │       ├── config.ts                # loads env/Key Vault refs
+    │       └── types.ts
+    ├── .github/
+    │   └── workflows/
+    │       ├── ci.yml                   # lint/test/build on PR
+    │       ├── deploy-infra.yml         # terraform plan/apply (manual dispatch)
+    │       ├── deploy-functions.yml     # build & publish Functions (Consumption)
+    │       └── deploy-agent.yml         # build & push container; update Container Apps
+    └── .devcontainer/                   # optional VS Code dev container
+        ├── devcontainer.json
+        └── Dockerfile
+
+***
+
+## 📜 README.md (what it should cover)
+
+Your `README.md` should include:
+
+*   **Overview**: what Moltbot-on-Azure is and the minimal-cost principles (Functions free tier, scale-to-zero Container Apps, Storage free tier, GPT‑4o‑mini default).
+*   **Architecture**: link to `docs/architecture-diagram.md` (Mermaid diagram you already have).
+*   **Prereqs**:
+    *   Azure subscription + Entra ID
+    *   Terraform & Azure CLI
+    *   Node.js 18+ and Docker
+*   **One‑time setup**:
+    *   `az login` & `az account set …`
+    *   `cd infra/terraform && terraform init && terraform apply …`
+*   **Deploy**:
+    *   GitHub Actions secrets (see below)
+    *   Manual GitHub Actions dispatch for infra/app
+*   **Local dev**:
+    *   Functions: `npm i && func start` with `local.settings.json.example`
+    *   Agent: `docker build …` or `npm run dev` (Node process for fast iteration)
+*   **Cost tips**: how to keep spend inside $1–$3/month (cache, token caps, minReplicas=0).
+*   **Security**: Key Vault, Managed Identity, HTTPS-only, content safety filters.
+
+***
+
+## 🔐 Secrets & configuration strategy
+
+Use **Key Vault** at runtime and **GitHub Environments** for deployment:
+
+*   **Key Vault (runtime)**
+    *   `AZURE-OPENAI-ENDPOINT`
+    *   `AZURE-OPENAI-DEPLOYMENT` (e.g., `gpt-4o-mini`)
+    *   `AZURE-OPENAI-API-KEY` (optional if using MI + AOAI data plane auth later)
+    *   `TELEGRAM-TOKEN` (if Telegram enabled)
+
+*   **GitHub → Settings → Secrets and variables → Actions**
+    *   `AZURE_CREDENTIALS` (JSON from `az ad sp create-for-rbac …` for GH Actions)
+    *   `AZURE_SUBSCRIPTION_ID`
+    *   `AZURE_TENANT_ID`
+    *   (optional) `CONTAINER_REGISTRY_LOGIN_SERVER` / `USERNAME` / `PASSWORD` if not using `azure/login` with OIDC
+    *   `TF_VAR_azure_openai_endpoint`, `TF_VAR_azure_openai_deployment` (and token if not Key Vault‑only)
+
+> **Note**: Code never stores secrets; Functions & Container Apps read Key Vault references or Managed Identity.
+
+***
+
+## ⚙️ Azure Functions (webhooks + admin) – example skeleton
+
+**`src/functions/HttpTelegram/function.json`**
+
+```json
+{
+  "bindings": [
+    { "authLevel": "function", "type": "httpTrigger", "direction": "in", "name": "req", "methods": ["post"], "route": "webhook/telegram" },
+    { "type": "http", "direction": "out", "name": "res" }
+  ]
+}
+```
+
+**`src/functions/HttpTelegram/index.ts`**
+
+```ts
+import { AzureFunction, Context, HttpRequest } from "@azure/functions";
+import { enqueueWork } from "../../shared/queue";
+import { verifyTelegramSignature } from "../../shared/verify";
+
+const httpTrigger: AzureFunction = async (ctx: Context, req: HttpRequest) => {
+  try {
+    if (!verifyTelegramSignature(req)) {
+      ctx.res = { status: 401 };
+      return;
+    }
+    // Normalize to a channel-agnostic work item
+    await enqueueWork({
+      channel: "telegram",
+      chatId: req.body?.message?.chat?.id,
+      text: req.body?.message?.text ?? "",
+      ts: Date.now()
+    });
+    ctx.res = { status: 200, body: "ok" };
+  } catch (e: any) {
+    ctx.log.error("webhook error", e);
+    ctx.res = { status: 500, body: "error" };
+  }
+};
+
+export default httpTrigger;
+```
+
+**`src/shared/queue.ts`**
+
+```ts
+import { QueueServiceClient } from "@azure/storage-queue";
+const queueClient = QueueServiceClient.fromConnectionString(process.env.AzureWebJobsStorage!)
+  .getQueueClient(process.env.QUEUE_NAME!);
+
+export async function enqueueWork(payload: unknown) {
+  await queueClient.sendMessage(Buffer.from(JSON.stringify(payload)).toString("base64"));
+}
+```
+
+> The Functions app stays in **Consumption (Always Free)** and only validates webhooks + drops messages to the queue (fast return → minimal execution time = minimal cost).
+
+***
+
+## 🧠 Container Apps “agent” – minimal runtime skeleton
+
+**`src/agent/src/index.ts`**
+
+```ts
+import express from "express";
+import { consumeQueue } from "./queue-worker";
+import { router as ui } from "./ui";
+const app = express();
+
+app.use("/healthz", (_req, res) => res.send("ok"));
+app.use("/ui", ui); // optional control UI
+
+// start background worker for queue -> LLM -> outbound reply
+consumeQueue().catch(err => console.error("worker error", err));
+
+app.listen(8080, () => console.log("Agent listening on :8080"));
+```
+
+**`src/agent/src/queue-worker.ts`**
+
+```ts
+import { QueueClient } from "@azure/storage-queue";
+import { respondTelegram } from "./integrations/telegram";
+import { callModel } from "./llm/azureOpenAI";
+
+const queue = new QueueClient(
+  `https://${process.env.STORAGE_ACCOUNT_NAME}.queue.core.windows.net`,
+  process.env.QUEUE_NAME!,
+  { credential: undefined } // use MSI via Azure AD Workload Identity or SAS; RBAC granted by Terraform
+);
+
+export async function consumeQueue() {
+  while (true) {
+    const { receivedMessageItems } = await queue.receiveMessages({ numberOfMessages: 16, visibilityTimeout: 30 });
+    for (const msg of receivedMessageItems) {
+      try {
+        const item = JSON.parse(Buffer.from(msg.messageText!, "base64").toString("utf8"));
+        const answer = await callModel(item.text);  // uses GPT‑4o‑mini by default, with token caps + caching
+        if (item.channel === "telegram") await respondTelegram(item.chatId, answer);
+        // delete after successful processing
+        await queue.deleteMessage(msg.messageId!, msg.popReceipt!);
+      } catch (e) {
+        console.error("worker failed", e);
+        // message will reappear after visibility timeout (DLQ pattern could be added)
+      }
+    }
+    await new Promise(r => setTimeout(r, 1000)); // small poll delay
+  }
+}
+```
+
+**`src/agent/src/llm/azureOpenAI.ts`**
+
+```ts
+import fetch from "node-fetch";
+const AOAI = process.env.AZURE_OPENAI_ENDPOINT!;
+const DEP  = process.env.AZURE_OPENAI_DEPLOYMENT!;
+const KEY  = process.env.AZURE_OPENAI_API_KEY!;
+
+export async function callModel(userText: string): Promise<string> {
+  const body = {
+    messages: [
+      { role: "system", content: "You are a concise, safe assistant. Avoid sensitive operations unless explicitly authorized." },
+      { role: "user", content: userText }
+    ],
+    max_tokens: 256,              // hard cap to control cost
+    temperature: 0.2
+  };
+  const res = await fetch(`${AOAI}openai/deployments/${DEP}/chat/completions?api-version=2024-10-01-preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "api-key": KEY },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content ?? "";
+}
+```
+
+**`src/agent/Dockerfile`**
+
+```dockerfile
+FROM node:18-alpine@sha256:...   # pin digest in real repo
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY src ./src
+EXPOSE 8080
+CMD ["node", "src/index.js"]
+```
+
+> The Container App is **Consumption** with `minReplicas=0` and small CPU/RAM, so it sleeps when idle—driving cost close to $0.
+
+***
+
+## 🔧 GitHub Actions (CI/CD) – high level
+
+**`.github/workflows/deploy-infra.yml`**
+
+*   Manual dispatch or on push to `main`/`infra` path.
+*   Uses `azure/login` with OIDC, runs `terraform init/plan/apply` in `infra/terraform`.
+*   Inputs for `TF_VAR_*` to pass AOAI endpoint/deployment if you prefer not to read from repo variables.
+
+**`.github/workflows/deploy-functions.yml`**
+
+*   On push to `src/functions/**`.
+*   `actions/setup-node`, `npm ci`, `func azure functionapp publish` (or `zip deploy` via `azure/functions-action`).
+*   Uses Function App name from Terraform outputs (you can store it as an env in GH).
+
+**`.github/workflows/deploy-agent.yml`**
+
+*   On push to `src/agent/**`.
+*   Build container, push to ACR or GHCR.
+*   `az containerapp update` to set the new image tag.
+*   (Optional) enforce image digest pin & provenance.
+
+***
+
+## 🛡️ Security & safety files (in `docs/`)
+
+*   **security-baseline.md**
+    *   Entra MFA + Conditional Access
+    *   Managed Identity only
+    *   HTTPS-only, TLS 1.2+, private endpoints (optional)
+    *   Key Vault soft-delete + purge-protection
+    *   RBAC: *Storage Queue/Blob Data Contributor* only to app identities
+    *   Content‑safety preprocessing, prompt injection guardrails, secrets redaction
+    *   Token caps + per-user/day quotas
+
+*   **threat-model.md**
+    *   DFD for webhooks → queue → agent → LLM → outbound channel
+    *   STRIDE risks + mitigations
+    *   Supply chain (image signing, SCA scans)
+
+*   **runbook-operations.md**
+    *   Rotate secrets, scale limits, DLQ triage, log sampling, cost anomaly checks
+
+***
+
+## 🚀 Getting started (developer experience)
+
+1.  **Provision**
+    ```bash
+    cd infra/terraform
+    terraform init
+    terraform apply -var 'location=southcentralus' \
+                    -var 'azure_openai_endpoint=...' \
+                    -var 'azure_openai_deployment=gpt-4o-mini'
+    ```
+
+2.  **Configure GitHub secrets** (`AZURE_CREDENTIALS`, `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, optional ACR creds).
+
+3.  **Deploy Functions**
+    *   Push to `src/functions/**` or run the workflow manually.
+
+4.  **Deploy Agent**
+    *   Push to `src/agent/**` to trigger container build + Container Apps update.
+
+5.  **Set Telegram webhook**
+    *   Use the Function App URL: `https://<fn-app>.azurewebsites.net/api/webhook/telegram?code=<function_key>`
+
+***
+
+## ✅ Why this repo shape works
+
+*   **Cheap by design**: Functions free tier, Storage free tier, Container Apps scale‑to‑zero, GPT‑4o‑mini defaults with caching/token caps.
+*   **Secure by default**: MSI + Key Vault, HTTPS-only, least‑privilege RBAC, optional private endpoints, and content‑safety filters.
+*   **Maintainable**: Clean split between **control plane** (Functions) and **runtime** (Container Apps), shared lib, and IaC in `infra/`.
+
+***
+
+If you’d like, I can **package this as a starter repo** (zip) or generate **scaffolded files** for quick copy‑paste (Functions function.json/index.ts, agent Dockerfile, workflows YAML).

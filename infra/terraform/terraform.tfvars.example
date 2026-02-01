@@ -1,0 +1,25 @@
+# Azure region
+location = "westus3"
+
+# Environment (dev, staging, prod)
+environment = "dev"
+
+# Project name (used for resource naming)
+project_name = "molten"
+
+# Azure OpenAI configuration
+azure_openai_endpoint   = "https://YOUR_AOAI_RESOURCE.openai.azure.com/"
+azure_openai_deployment = "gpt-4o-mini"
+azure_openai_api_key    = "YOUR_AOAI_API_KEY"
+
+# Telegram bot token (optional)
+telegram_bot_token = ""
+
+# Enable integrations
+enable_slack   = false
+enable_discord = false
+
+# Function plan SKU
+# Y1 = Consumption (free tier) - 1M executions/month free
+# B1 = Basic ($13/mo) - use if Y1 fails with quota error
+function_plan_sku = "Y1"
