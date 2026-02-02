@@ -4,6 +4,13 @@
 # =============================================================================
 # This script deploys Molten infrastructure using Azure CLI
 # Run from the repository root directory
+#
+# SECURITY WARNING:
+# This script prompts for secrets interactively. To protect your secrets:
+# - Do NOT commit terminal output or logs containing secrets
+# - Clear shell history after running: history -c
+# - Never copy-paste secrets into files that might be committed
+# - Secrets are stored securely in Azure Key Vault after entry
 # =============================================================================
 
 set -e

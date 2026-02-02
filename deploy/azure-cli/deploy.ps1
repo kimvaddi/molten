@@ -3,6 +3,13 @@
 # =============================================================================
 # This script deploys Molten infrastructure using Azure CLI from PowerShell
 # Run from the repository root directory
+#
+# SECURITY WARNING:
+# This script prompts for secrets interactively. To protect your secrets:
+# - Do NOT commit terminal output or logs containing secrets
+# - Clear PowerShell history: Clear-History; Remove-Item (Get-PSReadlineOption).HistorySavePath
+# - Never copy-paste secrets into files that might be committed
+# - Secrets are stored securely in Azure Key Vault after entry
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
