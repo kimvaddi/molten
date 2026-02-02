@@ -62,7 +62,7 @@ variable "function_plan_sku" {
 variable "keyvault_network_default_action" {
   description = "Key Vault network ACL default action. Use 'Deny' for production with private endpoints."
   type        = string
-  default     = "Deny"
+  default     = "Allow"  # Changed from Deny to allow deployment, secured via RBAC
 
   validation {
     condition     = contains(["Allow", "Deny"], var.keyvault_network_default_action)

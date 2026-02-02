@@ -13,13 +13,22 @@ resource "azurerm_storage_account" "main" {
   account_tier                    = "Standard"
   account_replication_type        = "LRS"
   min_tls_version                 = "TLS1_2"
-  shared_access_key_enabled       = true  # Required for Functions
+  shared_access_key_enabled       = true  # Required for Functions initial deployment
   allow_nested_items_to_be_public = false
+  default_to_oauth_authentication = true  # Prefer Azure AD authentication
 
   blob_properties {
     delete_retention_policy {
       days = 7
     }
+  }
+
+  # Network security: Allow Azure services but restrict public access
+  network_rules {
+    default_action             = "Deny"
+    bypass                     = ["AzureServices"]
+    ip_rules                   = []  # Add your IPs here if needed
+    virtual_network_subnet_ids = []
   }
 
   tags = local.tags
@@ -93,6 +102,15 @@ resource "azurerm_key_vault_secret" "telegram_token" {
   depends_on = [azurerm_role_assignment.deployer_kv]
 }
 
+# Store storage connection string in Key Vault (best practice)
+resource "azurerm_key_vault_secret" "storage_connection_string" {
+  name         = "storage-connection-string"
+  value        = azurerm_storage_account.main.primary_connection_string
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_role_assignment.deployer_kv]
+}
+
 # Log Analytics Workspace (FREE: 5GB/month)
 resource "azurerm_log_analytics_workspace" "main" {
   name                = "${local.resource_prefix}-logs"
@@ -147,11 +165,14 @@ resource "azurerm_linux_function_app" "main" {
   }
 
   app_settings = {
-    "FUNCTIONS_WORKER_RUNTIME" = "node"
-    "QUEUE_NAME"               = azurerm_storage_queue.work.name
-    "KEY_VAULT_URI"            = azurerm_key_vault.main.vault_uri
-    "STORAGE_ACCOUNT_NAME"     = azurerm_storage_account.main.name
-    "AzureWebJobsStorage"      = azurerm_storage_account.main.primary_connection_string
+    "FUNCTIONS_WORKER_RUNTIME"       = "node"
+    "QUEUE_NAME"                     = azurerm_storage_queue.work.name
+    "KEY_VAULT_URI"                  = azurerm_key_vault.main.vault_uri
+    "STORAGE_ACCOUNT_NAME"           = azurerm_storage_account.main.name
+    # Use Key Vault reference for storage connection (Microsoft best practice)
+    "AzureWebJobsStorage"            = "@Microsoft.KeyVault(VaultName=${azurerm_key_vault.main.name};SecretName=storage-connection-string)"
+    "AZURE_OPENAI_DEPLOYMENT"        = var.azure_openai_deployment
+    "WEBSITE_ENABLE_SYNC_UPDATE_SITE" = "true"
   }
 
   tags = local.tags
@@ -168,6 +189,20 @@ resource "azurerm_role_assignment" "func_kv" {
 resource "azurerm_role_assignment" "func_queue" {
   scope                = azurerm_storage_account.main.id
   role_definition_name = "Storage Queue Data Contributor"
+  principal_id         = azurerm_linux_function_app.main.identity[0].principal_id
+}
+
+# Grant Functions access to Storage Blob (for configs/state)
+resource "azurerm_role_assignment" "func_blob" {
+  scope                = azurerm_storage_account.main.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_linux_function_app.main.identity[0].principal_id
+}
+
+# Grant Functions access to Storage Table (if needed)
+resource "azurerm_role_assignment" "func_table" {
+  scope                = azurerm_storage_account.main.id
+  role_definition_name = "Storage Table Data Contributor"
   principal_id         = azurerm_linux_function_app.main.identity[0].principal_id
 }
 

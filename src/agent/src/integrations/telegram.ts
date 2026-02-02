@@ -1,13 +1,44 @@
 import fetch from "node-fetch";
+import { DefaultAzureCredential } from "@azure/identity";
+import { SecretClient } from "@azure/keyvault-secrets";
+
+let cachedToken: string | null = null;
+const credential = new DefaultAzureCredential();
+
+async function getTelegramToken(): Promise<string> {
+  if (cachedToken) return cachedToken;
+
+  // Try Key Vault first (production)
+  const keyVaultUri = process.env.KEY_VAULT_URI;
+  if (keyVaultUri) {
+    try {
+      console.log("Loading Telegram token from Key Vault...");
+      const client = new SecretClient(keyVaultUri, credential);
+      const secret = await client.getSecret("telegram-bot-token");
+      cachedToken = secret.value || "";
+      console.log("Telegram token loaded from Key Vault");
+      return cachedToken;
+    } catch (err) {
+      console.warn("Failed to load Telegram token from Key Vault:", err);
+    }
+  }
+
+  // Fallback to environment variable (local development only)
+  cachedToken = process.env.TELEGRAM_BOT_TOKEN || "";
+  if (!cachedToken) {
+    console.warn("TELEGRAM_BOT_TOKEN not found in Key Vault or environment");
+  }
+  return cachedToken;
+}
 
 export async function sendTelegramMessage(
   chatId: number,
   text: string
 ): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token = await getTelegramToken();
 
   if (!token) {
-    console.warn("TELEGRAM_BOT_TOKEN not set");
+    console.warn("TELEGRAM_BOT_TOKEN not available");
     return;
   }
 
