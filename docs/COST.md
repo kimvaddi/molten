@@ -2,42 +2,45 @@
 
 ## Summary
 
-**Target**: <$5/month  
-**Typical Usage**: $2-5/month  
-**Region**: West US 3
-
-## Detailed Cost Breakdown
-
+**Target**: <$10/month
+**Typical Usage**: ~$8/month for 1,500 messages
 ### Azure Services
 
-| Service | SKU | Free Tier | Typical Usage | Est. Cost |
-|---------|-----|-----------|---------------|----------|
-| Azure Functions | Consumption (Y1) | 1M exec + 400K GB-s | ~10K exec | **$0** |
-| Storage Account | Standard LRS | 5GB + 20K ops | ~100MB | **$0** |
-| Key Vault | Standard | 10K operations | ~1K ops | **$0** |
-| Log Analytics | Free tier | 5GB/month | ~500MB | **$0** |
-| Application Insights | Free tier | Included with Log Analytics | ~500MB | **$0** |
-| **Azure OpenAI** | Pay-per-token | None | Variable | **$2-5** |
+| Service | Monthly Cost | Notes |
+|---------|--------------|-------|
+| Azure Functions | $0.00 | 1M executions + 400K GB-s free/month |
+| Azure Container Apps | $0.00 | 180K vCPU-sec + 360K GB-s free/month (scale-to-zero) |
+| Azure Blob Storage | ~$0.50 | Includes storage + read/write transactions |
+| Azure Key Vault | ~$0.03 | $0.03 per 10,000 operations (~200 ops = ~$0.0006, rounded up) |
+| Application Insights | $0.00 | 5GB ingestion/month free |
+| OpenAI API (GPT-4o-mini) | ~$7.50 | 500K tokens (input/output combined) |
+| Bandwidth | $0.00 | First 100GB outbound/month free |
+| **TOTAL** | **~$8.03** | **Under $10/month for ~1,500 messages** |
 
 ### Azure OpenAI Pricing (GPT-4o-mini)
 
-| Token Type | Price per 1M | Typical Monthly | Est. Cost |
-|------------|--------------|-----------------|----------|
-| Input | $0.150 | ~500K tokens | $0.08 |
-| Output | $0.600 | ~200K tokens | $0.12 |
-| Cached Input | $0.075 | ~300K tokens | $0.02 |
-| **Total** | | | **~$0.22** |
+| Token Type | Price per 1M Tokens |
+|------------|--------------------|
+| Input | $0.15 |
+| Output | $0.60 |
+| Cached Input | $0.075 |
 
-> **Note**: Heavy usage (1000+ messages/day) could reach $2-5/month.
+**Example calculation (1,500 messages/month):**
+- ~250K input tokens × $0.15/1M = $0.0375
+- ~250K output tokens × $0.60/1M = $0.15
+- With overhead and no caching: ~$7.50/month
+
+> **Tip**: Response caching can reduce this by 50-80%.
 
 ### Optional Services (Disabled by Default)
 
 | Service | SKU | Monthly Cost | Notes |
 |---------|-----|--------------|-------|
-| Container Registry | Basic | $5.00 | Use GHCR instead (free) |
-| Container Apps | Consumption | $0-10 | Scale-to-zero, pay per use |
-| API Management | Consumption | $3.50/million calls | AI gateway features |
+| Container Registry | Basic | $5.00 | Use GitHub Container Registry instead (free) |
+| API Management | Consumption | $3.50/million calls | For rate limiting/governance |
 | Cosmos DB | Serverless | $0.25/million RU | Use Table Storage instead |
+
+> **Note**: Container Apps is now **included** in the base architecture and uses the free tier.
 
 ## Cost Optimization Strategies
 

@@ -9,7 +9,7 @@ A self-hosted personal AI agent running on Azure's free tier services — inspir
 ![Architecture Diagram](docs/architecture-diagram.png)
 
 ## 🎯 Design Goals
-- **Minimal cost**: <$3/month using Azure free tiers
+- **Minimal cost**: <$10/month using Azure free tiers
 - **Security-first**: Managed Identity, Key Vault, Entra ID, content safety
 - **No Mac mini**: Fully cloud-hosted, no dedicated hardware
 - **Production-ready**: CI/CD, observability, scale-to-zero
@@ -19,42 +19,49 @@ A self-hosted personal AI agent running on Azure's free tier services — inspir
 ```
 ┌──────────────┐     HTTPS      ┌─────────────────────────────────────┐
 │  Telegram /  │───────────────►│  Azure Functions (Consumption)      │
-│  Slack /     │                │  • Webhook handlers                 │
+│  Slack /     │                │  • Webhook receiver                 │
 │  Discord     │◄───────────────│  • JWT validation                   │
-└──────────────┘    Response    │  • Azure OpenAI integration         │
+└──────────────┘    Response    │  • Queue dispatch                   │
                                 └──────────────┬──────────────────────┘
                                                │
                                                ▼
                     ┌─────────────────────────────────────────────────┐
-                    │              Azure Storage (Free Tier)          │
-                    │  • Blob: configs, sessions, attachments         │
-                    │  • Table: conversation metadata                 │
-                    │  • Queue: async work dispatch (optional)        │
+                    │         Azure Storage Queue (Free Tier)         │
+                    │              Work item dispatch                 │
                     └──────────────┬──────────────────────────────────┘
                                    │
-                    ┌──────────────┴──────────────┐
-                    ▼                             ▼
-         ┌─────────────────────┐       ┌─────────────────────┐
-         │  Azure Key Vault    │       │  Azure OpenAI       │
-         │  • Secrets mgmt     │       │  • GPT-4o-mini      │
-         │  • Managed Identity │       │  • Response cache   │
-         └─────────────────────┘       └─────────────────────┘
+                                   ▼
+                    ┌─────────────────────────────────────────────────┐
+                    │    Azure Container Apps (Consumption - FREE)    │
+                    │  • Molten Agent runtime                        │
+                    │  • OpenClaw.ai integration                      │
+                    │  • Scale-to-zero when idle                      │
+                    └──────────────┬──────────────────────────────────┘
+                                   │
+                    ┌──────────────┼──────────────┬───────────────────┐
+                    ▼              ▼              ▼                   ▼
+         ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+         │ Azure OpenAI │ │  Key Vault   │ │ Blob Storage │ │  App Insights│
+         │ GPT-4o-mini  │ │  (secrets)   │ │   (state)    │ │   (logs)     │
+         └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
 ```
 
 See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 
-## 💰 Cost Breakdown (Target: <$5/month)
+## 💰 Cost Breakdown (Target: <$10/month)
 
-| Service | Free Tier | Estimated Usage | Est. Cost |
-|---------|-----------|-----------------|----------|
-| Azure Functions | 1M exec/month | ~10K | $0 |
-| Azure Storage | 5GB blob + queue | ~100MB | $0 |
-| Key Vault | 10K ops/month | ~1K | $0 |
-| Log Analytics | 5GB/month | ~500MB | $0 |
-| Azure OpenAI | Pay-per-token | GPT-4o-mini | ~$2-5 |
-| **Total** | | | **$2-5/mo** |
+| Service | Monthly Cost | Notes |
+|---------|--------------|-------|
+| Azure Functions | $0.00 | 1M executions + 400K GB-s free/month |
+| Azure Container Apps | $0.00 | 180K vCPU-sec + 360K GB-s free/month |
+| Azure Blob Storage | ~$0.50 | Includes storage + read/write transactions |
+| Azure Key Vault | ~$0.03 | $0.03 per 10,000 operations |
+| Application Insights | $0.00 | 5GB ingestion/month free |
+| OpenAI API (GPT-4o-mini) | ~$7.50 | ~500K tokens (input/output combined) |
+| Bandwidth | $0.00 | First 100GB outbound/month free |
+| **TOTAL** | **~$8.03** | **Under $10/month for ~1,500 messages** |
 
-> **Note**: Costs depend on usage. The response cache can reduce OpenAI costs by 50-80%.
+> **Note**: Response caching can reduce OpenAI costs by 50-80%. See [docs/COST.md](docs/COST.md) for optimization tips.
 
 ## 📋 Prerequisites
 
