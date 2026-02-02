@@ -51,7 +51,7 @@ resource "azurerm_key_vault" "main" {
   enable_rbac_authorization = true
 
   network_acls {
-    default_action = "Allow" # Restrict in production
+    default_action = var.keyvault_network_default_action # "Deny" for production
     bypass         = "AzureServices"
   }
 

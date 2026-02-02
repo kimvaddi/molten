@@ -42,3 +42,14 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Deployment outputs (may contain secrets)
+*.output
+*.out
+deploy-*.log
+terraform-*.log
+
+# Shell history (if accidentally saved)
+.bash_history
+.zsh_history
+ConsoleHost_history.txt

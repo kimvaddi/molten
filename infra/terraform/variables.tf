@@ -54,9 +54,20 @@ variable "enable_discord" {
 }
 
 variable "function_plan_sku" {
-  description = "Function App plan SKU (Y1=Consumption/Free, B1=Basic, EP1=Premium)"
+  description = "Function App plan SKU (Y1=Consumption/Free, B1=Basic)"
   type        = string
-  default     = "B1"  # B1 works in most enterprise subscriptions
+  default     = "Y1"  # Consumption tier - FREE
+}
+
+variable "keyvault_network_default_action" {
+  description = "Key Vault network ACL default action. Use 'Deny' for production with private endpoints."
+  type        = string
+  default     = "Deny"
+
+  validation {
+    condition     = contains(["Allow", "Deny"], var.keyvault_network_default_action)
+    error_message = "Must be 'Allow' or 'Deny'."
+  }
 }
 
 locals {
