@@ -109,10 +109,103 @@ Molten is a serverless AI agent running on Azure's free tier, optimized for cost
 3. **Function validates** → JWT/signature verification
 4. **Secrets fetched** → Key Vault via Managed Identity
 5. **Check cache** → Return cached response if hit
-6. **Call OpenAI** → GPT-4o-mini with safety filters
-7. **Cache response** → Store for future hits
-8. **Send reply** → Back to messaging platform
-9. **Log telemetry** → Application Insights
+6. **Content safety** → Pre-filter prompts
+7. **Call OpenAI** → GPT-4o-mini with context
+8. **Skills execution** (if needed):
+   - LLM determines required skill (bash, text_editor, web-search, etc.)
+   - TypeScript calls `skillsRegistry.executeSkill()`
+   - For Anthropic skills: Python subprocess spawned
+   - `anthropic_executor.py` runs in sandboxed environment
+   - Results returned to TypeScript → back to LLM
+9. **Cache response** → Store for future hits
+10. **Send reply** → Back to messaging platform
+11. **Log telemetry** → Application Insights + Cosmos DB (skill analytics)
+
+## Skills Architecture
+
+### Skills Flow
+
+```
+┌─────────────────┐
+│   User Prompt   │
+│ "Run df -h cmd" │
+└────────┬────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│     Azure OpenAI (GPT-4o-mini)         │
+│  Determines: Need bash skill           │
+│  Returns: { skill: "bash", ... }       │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│   skillsRegistry.executeSkill()        │
+│   (TypeScript - skillsRegistry.ts)     │
+│   • Validates parameters                │
+│   • Logs to Cosmos DB                   │
+│   • Routes to executor                  │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│    Anthropic Executor (Python)         │
+│    anthropic_executor.py               │
+│    • execute_bash()                     │
+│    • execute_text_editor()              │
+│    • Security sandbox                   │
+│    • Timeout enforcement                │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│         Result JSON                    │
+│ { success: true, data: {...} }         │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│   Back to OpenAI for formatting        │
+│   "Your disk usage is: ..."            │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│      User receives response            │
+└────────────────────────────────────────┘
+```
+
+### Skills Categories
+
+| Category | Skills | Runtime | Cost |
+|----------|--------|---------|------|
+| **Anthropic** | bash, text_editor | Python subprocess | **$0.00** |
+| **Azure** | web-search, calendar, email | TypeScript (Graph API) | **$0-3/mo** |
+| **Custom** | User-defined | TypeScript/Python | **$0.00** |
+
+### Skills Security
+
+- **Bash execution**: Dangerous command blocking (`rm -rf /`, fork bombs)
+- **File operations**: Restricted to `/tmp` directory
+- **Timeouts**: 30s default, configurable per skill
+- **Subprocess isolation**: No shell access to container secrets
+- **No root access**: Skills run as non-privileged user
+
+### Skills Monitoring
+
+All skill executions logged to **Azure Cosmos DB**:
+- `userId` (partition key)
+- `skillId`, `skillName`, `skillCategory`
+- `parameters`, `success`, `error`
+- `duration` (ms), `timestamp`, `cost` ($)
+
+Query example:
+```sql
+SELECT c.skillId, COUNT(1) as ExecutionCount, AVG(c.duration) as AvgDuration
+FROM c
+WHERE c.userId = "user123"
+GROUP BY c.skillId
+```
 
 ## Cost Optimization
 

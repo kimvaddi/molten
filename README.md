@@ -13,6 +13,7 @@ A self-hosted personal AI agent running on Azure's free tier services — inspir
 - **Security-first**: Managed Identity, Key Vault, Entra ID, content safety
 - **No Mac mini**: Fully cloud-hosted, no dedicated hardware
 - **Production-ready**: CI/CD, observability, scale-to-zero
+- **Extensible skills**: Free Anthropic Computer Use + Azure-native integrations
 
 ## 🏗️ Architecture
 
@@ -58,10 +59,12 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 | Azure Key Vault | ~$0.03 | $0.03 per 10,000 operations |
 | Application Insights | $0.00 | 5GB ingestion/month free |
 | OpenAI API (GPT-4o-mini) | ~$7.50 | ~500K tokens (input/output combined) |
+| Anthropic Skills | $0.00 | FREE (runs locally, no API costs) |
+| Tavily Web Search | ~$0.01 | Optional (~100 searches/month) |
 | Bandwidth | $0.00 | First 100GB outbound/month free |
-| **TOTAL** | **~$8.03** | **Under $10/month for ~1,500 messages** |
+| **TOTAL** | **~$8.04** | **Under $10/month for ~1,500 messages** |
 
-> **Note**: Response caching can reduce OpenAI costs by 50-80%. See [docs/COST.md](docs/COST.md) for optimization tips.
+> **Note**: All skills are FREE (Anthropic Computer Use). Only Tavily web search has minimal costs (~$0.01/search). See [docs/COST.md](docs/COST.md) for optimization tips.
 
 ## 📋 Prerequisites
 
@@ -69,10 +72,11 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 - [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) >= 2.50
 - [Terraform](https://www.terraform.io/downloads) >= 1.5
 - [Node.js](https://nodejs.org/) >= 20 LTS
+- [Python](https://www.python.org/) >= 3.9 (for Anthropic skills)
 - [Azure Functions Core Tools](https://docs.microsoft.com/azure/azure-functions/functions-run-local) >= 4.x
 - Telegram Bot Token (from [@BotFather](https://t.me/botfather))
 - Azure OpenAI access (requires [application](https://aka.ms/oai/access))
-- *(Optional)* [Tavily API key](https://tavily.com/) for web search
+- *(Optional)* [Tavily API key](https://tavily.com/) for web search (~$0.01/search)
 
 ## 🚀 Quick Start
 
@@ -121,7 +125,60 @@ WEBHOOK_URL=$(terraform -chdir=infra/terraform output -raw telegram_webhook_url)
 curl -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook?url=${WEBHOOK_URL}"
 ```
 
-## 💡 Cost Optimization Strategies
+## �️ Skills Framework (100% FREE)
+
+Molten uses **Anthropic Computer Use** for zero-cost skill execution:
+
+### Available Skills
+
+| Skill | Category | Cost | Description |
+|-------|----------|------|-------------|
+| **bash** | Anthropic | **$0.00** | Execute shell commands (secure sandbox) |
+| **text_editor** | Anthropic | **$0.00** | Create, edit, delete files |
+| **web-search** | Azure | **~$0.01** | Tavily web search (optional) |
+| **calendar** | Azure | **$0.00** | Microsoft Graph calendar |
+| **email** | Azure | **$0.00** | Microsoft Graph email |
+
+### Why Anthropic Computer Use?
+
+- ✅ **FREE** - No API subscription, runs locally
+- ✅ **Open Source** - MIT license, fully auditable
+- ✅ **Self-Hosted** - Data stays in your Azure infrastructure
+- ✅ **Extensible** - Add custom skills in TypeScript or Python
+- ✅ **Enterprise-Grade** - Built-in security, timeouts, sandboxing
+
+### Example Usage
+
+```typescript
+import { getSkillsRegistry } from "./skills/skillsRegistry";
+
+const skillsRegistry = await getSkillsRegistry();
+
+// Execute bash command
+const result = await skillsRegistry.executeSkill({
+  skillId: "bash",
+  parameters: {
+    command: "df -h",
+    timeout: 10,
+  },
+  userId: "user123",
+});
+
+// Edit files
+await skillsRegistry.executeSkill({
+  skillId: "text_editor",
+  parameters: {
+    action: "create",
+    file_path: "/tmp/notes.txt",
+    content: "Meeting notes...",
+  },
+  userId: "user123",
+});
+```
+
+**Learn more**: [docs/SKILLS-INTEGRATION.md](docs/SKILLS-INTEGRATION.md)
+
+## �💡 Cost Optimization Strategies
 
 | Strategy | Savings |
 |----------|--------|
