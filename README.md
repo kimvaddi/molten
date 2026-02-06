@@ -75,63 +75,73 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 
 ## 📋 Prerequisites
 
-- Azure subscription (free tier works)
+- Azure subscription ([create free account](https://azure.microsoft.com/free/))
 - [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) >= 2.50
-- [Terraform](https://www.terraform.io/downloads) >= 1.5
-- [Node.js](https://nodejs.org/) >= 20 LTS (agent container uses Node.js 22)
+- [Node.js](https://nodejs.org/) >= 20 LTS
 - [Python](https://www.python.org/) >= 3.9 (for Anthropic skills)
+- [Docker](https://www.docker.com/) (for building agent container)
+- [Terraform](https://www.terraform.io/downloads) >= 1.5 *(if using Terraform deploy)*
 - [Azure Functions Core Tools](https://docs.microsoft.com/azure/azure-functions/functions-run-local) >= 4.x
+- Azure OpenAI access (requires [approval](https://aka.ms/oai/access) — typically 1–3 days)
 - Telegram Bot Token (from [@BotFather](https://t.me/botfather))
-- Azure OpenAI access (requires [application](https://aka.ms/oai/access))
 - *(Optional)* [Tavily API key](https://tavily.com/) for web search (~$0.01/search)
 - *(Optional)* OpenClaw for enhanced skills — deployed as Azure Container App (see `infra/terraform/main.tf`)
 
+> **New to Azure or Molten?** See [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) for a complete walkthrough from zero to working bot.
+
 ## 🚀 Quick Start
 
-### 1. Clone and configure
+### Option A: Terraform (Recommended)
+
+Full infrastructure-as-code with plan/apply workflow.
 
 ```bash
 git clone https://github.com/kimvaddi/molten.git
 cd molten
-```
 
-### 2. Azure login
-
-```bash
 az login
 az account set --subscription "YOUR_SUBSCRIPTION_ID"
-```
 
-### 3. Deploy infrastructure
-
-```bash
 cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
+# Edit terraform.tfvars with your OpenAI endpoint, key, Telegram token, etc.
 
 terraform init
 terraform plan
 terraform apply
 ```
 
-### 4. Deploy Functions
+Then deploy the code:
 
 ```bash
-cd src/functions
-npm install
-npm run build
+# Deploy Function App
+cd ../../src/functions && npm install && npm run build
 func azure functionapp publish $(terraform -chdir=../../infra/terraform output -raw function_app_name)
-```
-
-### 5. Configure Telegram Bot
-
-```bash
-# Get your webhook URL
-WEBHOOK_URL=$(terraform -chdir=infra/terraform output -raw telegram_webhook_url)
 
 # Set Telegram webhook
+WEBHOOK_URL=$(terraform -chdir=../../infra/terraform output -raw telegram_webhook_url)
 curl -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook?url=${WEBHOOK_URL}"
 ```
+
+### Option B: Azure CLI Script (One-Command)
+
+Interactive script that creates everything — including optional auto-creation of Azure OpenAI resources, Function App deployment, and Telegram webhook registration.
+
+```bash
+git clone https://github.com/kimvaddi/molten.git
+cd molten
+
+az login
+
+# Bash (Linux/macOS/WSL)
+chmod +x deploy/azure-cli/deploy.sh
+./deploy/azure-cli/deploy.sh
+
+# PowerShell (Windows)
+.\deploy\azure-cli\deploy.ps1
+```
+
+> **Need step-by-step guidance?** See [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) for a complete walkthrough.
 
 ## �️ Skills Framework (100% FREE)
 
@@ -238,13 +248,13 @@ molten/
 
 ## 🚀 Deployment Options
 
-| Method | Description | Guide |
-|--------|-------------|-------|
-| **Terraform** | Infrastructure as Code (recommended) | [deploy/terraform](infra/terraform/) |
-| **Azure CLI** | Shell scripts for Linux/macOS/WSL | [deploy/azure-cli](deploy/azure-cli/) |
-| **PowerShell** | Native Windows deployment | [deploy/powershell](deploy/powershell/) |
-| **ARM Templates** | Azure Resource Manager JSON | [deploy/arm](deploy/arm/) |
-| **Bicep** | Azure DSL for ARM | [deploy/bicep](deploy/bicep/) |
+| Method | Description | One-Command? | Guide |
+|--------|-------------|:------------:|-------|
+| **Terraform** | Infrastructure as Code (recommended) | No — infra + manual code deploy | [infra/terraform](infra/terraform/) |
+| **Azure CLI** | Interactive shell scripts | **Yes** — infra + code + webhook | [deploy/azure-cli](deploy/azure-cli/) |
+| **PowerShell** | Native Windows deployment (Az module) | No — infra + manual code deploy | [deploy/powershell](deploy/powershell/) |
+| **ARM Templates** | Azure Resource Manager JSON | No — infra only (no Container App) | [deploy/arm](deploy/arm/) |
+| **Bicep** | Azure DSL for ARM | No — infra only (no Container App) | [deploy/bicep](deploy/bicep/) |
 
 ## 🤝 Contributing
 

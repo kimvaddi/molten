@@ -1,6 +1,8 @@
 # Bicep Deployment
 
-Deploy Molten using Azure Bicep - a declarative language for Azure resources.
+Deploy Molten infrastructure using Azure Bicep — a declarative language for Azure resources.
+
+> **Note**: Bicep templates deploy **infrastructure only** (storage, key vault, functions, monitoring). They do **not** create the Agent Container App, deploy function code, or register the Telegram webhook. For a one-command deployment, use the [Azure CLI scripts](../azure-cli/) instead.
 
 ## Prerequisites
 

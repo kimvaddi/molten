@@ -37,8 +37,35 @@ function Write-Log {
 function Test-Prerequisites {
     Write-Log "Checking prerequisites..."
     
+    $missing = $false
+    
     if (-not (Get-Command "az" -ErrorAction SilentlyContinue)) {
         Write-Log "Azure CLI not found. Install from https://docs.microsoft.com/cli/azure/install-azure-cli" "ERROR"
+        $missing = $true
+    }
+    
+    if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
+        Write-Log "Node.js not found. Install from https://nodejs.org/ (v20+ required)" "ERROR"
+        $missing = $true
+    } else {
+        $nodeVer = (node --version) -replace 'v','' -split '\.' | Select-Object -First 1
+        if ([int]$nodeVer -lt 20) {
+            Write-Log "Node.js v20+ required (found v$nodeVer). Update from https://nodejs.org/" "ERROR"
+            $missing = $true
+        }
+    }
+    
+    if (-not (Get-Command "func" -ErrorAction SilentlyContinue)) {
+        Write-Log "Azure Functions Core Tools not found. Install from https://docs.microsoft.com/azure/azure-functions/functions-run-local" "WARN"
+        Write-Log "You won't be able to auto-deploy Function App code." "WARN"
+    }
+    
+    if (-not (Get-Command "docker" -ErrorAction SilentlyContinue)) {
+        Write-Log "Docker not found. Install from https://www.docker.com/" "WARN"
+        Write-Log "You won't be able to build the agent container locally. ACR Build will be used if available." "WARN"
+    }
+    
+    if ($missing) {
         exit 1
     }
     
@@ -52,27 +79,103 @@ function Test-Prerequisites {
 }
 
 # =============================================================================
+# Create Azure OpenAI Resource (Optional)
+# =============================================================================
+function New-OpenAIResource {
+    $openaiName = "$ProjectName-$Environment-openai"
+    Write-Log "Creating Azure OpenAI resource: $openaiName"
+    
+    az cognitiveservices account create `
+        --name $openaiName `
+        --resource-group $ResourceGroup `
+        --kind OpenAI `
+        --sku S0 `
+        --location $Location `
+        --yes
+    
+    Write-Log "Deploying gpt-4o-mini model..."
+    az cognitiveservices account deployment create `
+        --name $openaiName `
+        --resource-group $ResourceGroup `
+        --deployment-name gpt-4o-mini `
+        --model-name gpt-4o-mini `
+        --model-version "2024-07-18" `
+        --model-format OpenAI `
+        --sku-capacity 10 `
+        --sku-name Standard
+    
+    $script:AzureOpenAIEndpoint = az cognitiveservices account show `
+        --name $openaiName --resource-group $ResourceGroup `
+        --query properties.endpoint -o tsv
+    $script:AzureOpenAIApiKeyPlain = az cognitiveservices account keys list `
+        --name $openaiName --resource-group $ResourceGroup `
+        --query key1 -o tsv
+    $script:AzureOpenAIDeployment = "gpt-4o-mini"
+    
+    Write-Log "Azure OpenAI created: $($script:AzureOpenAIEndpoint)"
+}
+
+# =============================================================================
+# Validate Azure OpenAI Endpoint
+# =============================================================================
+function Test-OpenAIEndpoint {
+    Write-Log "Validating Azure OpenAI endpoint..."
+    
+    try {
+        $headers = @{ "api-key" = $script:AzureOpenAIApiKeyPlain; "Content-Type" = "application/json" }
+        $body = '{"messages":[{"role":"user","content":"test"}],"max_tokens":1}'
+        $uri = "$($script:AzureOpenAIEndpoint)openai/deployments/$($script:AzureOpenAIDeployment)/chat/completions?api-version=2024-02-01"
+        $response = Invoke-WebRequest -Uri $uri -Method Post -Headers $headers -Body $body -ErrorAction Stop
+        Write-Log "OpenAI endpoint validated successfully"
+    } catch {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        if ($statusCode -eq 429) {
+            Write-Log "OpenAI endpoint reachable (rate limited - normal for S0 tier)"
+        } else {
+            Write-Log "OpenAI endpoint returned HTTP $statusCode. Deployment will continue but check your endpoint/key." "WARN"
+        }
+    }
+}
+
+# =============================================================================
 # Get User Inputs
 # =============================================================================
 function Get-DeploymentInputs {
     Write-Host ""
     Write-Log "Molten Deployment Configuration"
     Write-Host "================================"
+    Write-Host ""
+    Write-Host "Do you already have an Azure OpenAI resource, or should this script create one?"
+    Write-Host "  1) I already have an endpoint and API key"
+    Write-Host "  2) Create a new Azure OpenAI resource for me (auto)"
+    $openaiChoice = Read-Host "Choice [1]"
+    if (-not $openaiChoice) { $openaiChoice = "1" }
     
-    $script:AzureOpenAIEndpoint = Read-Host "Azure OpenAI Endpoint URL"
-    $script:AzureOpenAIApiKey = Read-Host "Azure OpenAI API Key" -AsSecureString
-    $script:AzureOpenAIApiKeyPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($script:AzureOpenAIApiKey))
+    if ($openaiChoice -eq "2") {
+        $script:AutoCreateOpenAI = $true
+        Write-Log "Will auto-create Azure OpenAI resource after resource group is created."
+    } else {
+        $script:AutoCreateOpenAI = $false
+        $script:AzureOpenAIEndpoint = Read-Host "Azure OpenAI Endpoint URL"
+        $script:AzureOpenAIApiKey = Read-Host "Azure OpenAI API Key" -AsSecureString
+        $script:AzureOpenAIApiKeyPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($script:AzureOpenAIApiKey))
+        
+        $deploymentInput = Read-Host "Azure OpenAI Deployment Name [gpt-4o-mini]"
+        $script:AzureOpenAIDeployment = if ($deploymentInput) { $deploymentInput } else { "gpt-4o-mini" }
+    }
     
-    $deploymentInput = Read-Host "Azure OpenAI Deployment Name [gpt-4o-mini]"
-    $script:AzureOpenAIDeployment = if ($deploymentInput) { $deploymentInput } else { "gpt-4o-mini" }
-    
-    $script:TelegramBotToken = Read-Host "Telegram Bot Token (optional)"
+    $script:TelegramBotToken = Read-Host "Telegram Bot Token (optional - get one from @BotFather on Telegram)"
     
     Write-Host ""
     Write-Log "Configuration:"
     Write-Host "  Resource Group: $ResourceGroup"
     Write-Host "  Location: $Location"
-    Write-Host "  OpenAI Deployment: $($script:AzureOpenAIDeployment)"
+    if ($script:AutoCreateOpenAI) {
+        Write-Host "  OpenAI: Will be auto-created"
+    } else {
+        Write-Host "  OpenAI Endpoint: $($script:AzureOpenAIEndpoint)"
+        Write-Host "  OpenAI Deployment: $($script:AzureOpenAIDeployment)"
+    }
 }
 
 # =============================================================================
@@ -312,6 +415,55 @@ function New-ContainerApp {
 }
 
 # =============================================================================
+# Deploy Function App Code
+# =============================================================================
+function Publish-FunctionCode {
+    $funcAppName = "$ProjectName-$Environment-func"
+    
+    if (-not (Get-Command "func" -ErrorAction SilentlyContinue)) {
+        Write-Log "Azure Functions Core Tools not installed - skipping Function App code deployment." "WARN"
+        Write-Log "Deploy manually: cd src/functions; npm install; npm run build; func azure functionapp publish $funcAppName" "WARN"
+        return
+    }
+    
+    Write-Log "Deploying Function App code to $funcAppName..."
+    $origDir = Get-Location
+    Set-Location src/functions
+    npm install --production
+    npm run build
+    func azure functionapp publish $funcAppName --nozip
+    Set-Location $origDir
+    Write-Log "Function App code deployed"
+}
+
+# =============================================================================
+# Register Telegram Webhook
+# =============================================================================
+function Register-TelegramWebhook {
+    if (-not $script:TelegramBotToken) {
+        Write-Log "No Telegram bot token provided - skipping webhook registration." "WARN"
+        Write-Log "Set it later: Invoke-RestMethod -Method Post -Uri 'https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://$ProjectName-$Environment-func.azurewebsites.net/api/telegram'" "WARN"
+        return
+    }
+    
+    $funcAppName = "$ProjectName-$Environment-func"
+    $webhookUrl = "https://$funcAppName.azurewebsites.net/api/telegram"
+    
+    Write-Log "Registering Telegram webhook: $webhookUrl"
+    try {
+        $response = Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$($script:TelegramBotToken)/setWebhook?url=$webhookUrl"
+        if ($response.ok) {
+            Write-Log "Telegram webhook registered successfully"
+        } else {
+            Write-Log "Telegram webhook registration response: $($response | ConvertTo-Json)" "WARN"
+        }
+    } catch {
+        Write-Log "Telegram webhook registration failed: $($_.Exception.Message)" "WARN"
+        Write-Log "Retry manually: Invoke-RestMethod -Method Post -Uri 'https://api.telegram.org/bot<TOKEN>/setWebhook?url=$webhookUrl'" "WARN"
+    }
+}
+
+# =============================================================================
 # Print Summary
 # =============================================================================
 function Write-Summary {
@@ -334,12 +486,10 @@ function Write-Summary {
     Write-Host "  Slack: https://$funcAppName.azurewebsites.net/api/slack"
     Write-Host "  Discord: https://$funcAppName.azurewebsites.net/api/discord"
     Write-Host ""
-    Write-Host "Next Steps:"
-    Write-Host "  1. cd src/functions; npm install; npm run build"
-    Write-Host "  2. func azure functionapp publish $funcAppName"
-    Write-Host "  3. cd src/agent; docker build -t ghcr.io/kimvaddi/molten:latest ."
-    Write-Host "  4. docker push ghcr.io/kimvaddi/molten:latest"
-    Write-Host "  5. az containerapp update -n $ProjectName-$Environment-agent -g $ResourceGroup --image ghcr.io/kimvaddi/molten:latest"
+    Write-Host "Verify your bot:"
+    Write-Host "  1. Open Telegram and find your bot by username"
+    Write-Host "  2. Send: Hello!"
+    Write-Host "  3. Check logs if no response: az containerapp logs show -n $ProjectName-$Environment-agent -g $ResourceGroup --tail 20"
     Write-Host ""
 }
 
@@ -361,9 +511,20 @@ if ($confirm -notmatch "^[Yy]$") {
 }
 
 New-ResourceGroup
+
+# Auto-create Azure OpenAI if requested
+if ($script:AutoCreateOpenAI) {
+    New-OpenAIResource
+}
+
+# Validate OpenAI before proceeding
+Test-OpenAIEndpoint
+
 New-StorageAccount
 New-KeyVault
 New-MonitoringResources
 New-FunctionApp
 New-ContainerApp
+Publish-FunctionCode
+Register-TelegramWebhook
 Write-Summary

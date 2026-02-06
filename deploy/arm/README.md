@@ -1,6 +1,8 @@
 # ARM Template Deployment
 
-Deploy Molten using Azure Resource Manager (ARM) templates.
+Deploy Molten infrastructure using Azure Resource Manager (ARM) templates.
+
+> **Note**: ARM templates deploy **infrastructure only** (storage, key vault, functions, monitoring). They do **not** create the Agent Container App, deploy function code, or register the Telegram webhook. For a one-command deployment, use the [Azure CLI scripts](../azure-cli/) instead.
 
 ## Prerequisites
 
@@ -119,5 +121,5 @@ az group delete --name molten-dev-rg --yes --no-wait
 To add a "Deploy to Azure" button to your repository:
 
 ```markdown
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FYOUR_USERNAME%2Fmolten%2Fmain%2Fdeploy%2Farm%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fkimvaddi%2Fmolten%2Fmain%2Fdeploy%2Farm%2Fazuredeploy.json)
 ```
