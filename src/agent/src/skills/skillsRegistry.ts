@@ -4,6 +4,7 @@ import { spawn } from "child_process";
 import { CosmosClient } from "@azure/cosmos";
 import fetch from "node-fetch";
 import * as crypto from "crypto";
+import * as nodemailer from "nodemailer";
 
 /**
  * Anthropic Computer Use Skills for Molten Agent
@@ -50,6 +51,7 @@ export class SkillsRegistry {
   private pythonPath: string;
   private cachedTavilyKey: string | null = null;
   private cachedGraphToken: { token: string; expiresOn: number } | null = null;
+  private cachedGmailAppPassword: string | null = null;
 
   constructor(config: { keyVaultUri: string; cosmosEndpoint?: string }) {
     this.keyVaultUri = config.keyVaultUri;
@@ -175,8 +177,25 @@ export class SkillsRegistry {
    * Load custom skills (extensible)
    */
   private loadCustomSkills(): void {
-    // Users can add their own custom skills here
-    // Example: GitHub, Azure DevOps, Slack, etc.
+    const customSkills: Skill[] = [
+      {
+        id: "gmail-send",
+        name: "Send Gmail",
+        description: "Send an email via Gmail SMTP using an App Password",
+        category: "custom",
+        cost: 0,
+        parameters: {
+          to: { type: "string", description: "Recipient email address" },
+          subject: { type: "string", description: "Email subject line" },
+          body: { type: "string", description: "Email body (plain text or HTML)" },
+        },
+        execute: async (params) => await this.executeGmailSend(params),
+      },
+    ];
+
+    for (const skill of customSkills) {
+      this.skills.set(skill.id, skill);
+    }
   }
 
   /**
@@ -356,6 +375,93 @@ export class SkillsRegistry {
       console.error("Failed to log to Cosmos DB:", err);
       // Don't fail the skill execution if logging fails
     }
+  }
+
+  /**
+   * Send email via Gmail SMTP with App Password
+   */
+  private async executeGmailSend(params: {
+    to: string;
+    subject: string;
+    body: string;
+  }): Promise<SkillResult> {
+    const gmailAddress = process.env.GMAIL_ADDRESS;
+    if (!gmailAddress) {
+      return {
+        success: false,
+        error: "GMAIL_ADDRESS not configured. Set the env var to your Gmail address.",
+      };
+    }
+
+    const appPassword = await this.getGmailAppPassword();
+    if (!appPassword) {
+      return {
+        success: false,
+        error: "Gmail App Password not configured. Store it as 'gmail-app-password' in Key Vault or set GMAIL_APP_PASSWORD env var.",
+      };
+    }
+
+    try {
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: gmailAddress,
+          pass: appPassword,
+        },
+      });
+
+      const isHtml = params.body.includes("<") && params.body.includes(">");
+
+      const info = await transporter.sendMail({
+        from: gmailAddress,
+        to: params.to,
+        subject: params.subject,
+        ...(isHtml ? { html: params.body } : { text: params.body }),
+      });
+
+      console.log(`Gmail sent to ${params.to}, messageId: ${info.messageId}`);
+
+      return {
+        success: true,
+        data: {
+          to: params.to,
+          subject: params.subject,
+          messageId: info.messageId,
+          status: "sent",
+        },
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Gmail send error: ${err.message}`,
+      };
+    }
+  }
+
+  /**
+   * Get Gmail App Password from env var or Key Vault
+   */
+  private async getGmailAppPassword(): Promise<string | null> {
+    if (this.cachedGmailAppPassword) return this.cachedGmailAppPassword;
+
+    if (process.env.GMAIL_APP_PASSWORD) {
+      this.cachedGmailAppPassword = process.env.GMAIL_APP_PASSWORD;
+      return this.cachedGmailAppPassword;
+    }
+
+    if (this.keyVaultUri) {
+      try {
+        const client = new SecretClient(this.keyVaultUri, this.credential);
+        const secret = await client.getSecret("gmail-app-password");
+        this.cachedGmailAppPassword = secret.value || null;
+        console.log("Gmail App Password loaded from Key Vault");
+        return this.cachedGmailAppPassword;
+      } catch (err) {
+        console.warn("Gmail App Password not found in Key Vault");
+      }
+    }
+
+    return null;
   }
 
   /**
