@@ -13,9 +13,9 @@ resource "azurerm_storage_account" "main" {
   account_tier                    = "Standard"
   account_replication_type        = "LRS"
   min_tls_version                 = "TLS1_2"
-  shared_access_key_enabled       = true  # Required for Functions initial deployment
+  shared_access_key_enabled       = true # Required for Functions initial deployment
   allow_nested_items_to_be_public = false
-  default_to_oauth_authentication = true  # Prefer Azure AD authentication
+  default_to_oauth_authentication = true # Prefer Azure AD authentication
 
   blob_properties {
     delete_retention_policy {
@@ -167,13 +167,13 @@ resource "azurerm_linux_function_app" "main" {
   }
 
   app_settings = {
-    "FUNCTIONS_WORKER_RUNTIME"       = "node"
-    "QUEUE_NAME"                     = azurerm_storage_queue.work.name
-    "KEY_VAULT_URI"                  = azurerm_key_vault.main.vault_uri
-    "STORAGE_ACCOUNT_NAME"           = azurerm_storage_account.main.name
+    "FUNCTIONS_WORKER_RUNTIME" = "node"
+    "QUEUE_NAME"               = azurerm_storage_queue.work.name
+    "KEY_VAULT_URI"            = azurerm_key_vault.main.vault_uri
+    "STORAGE_ACCOUNT_NAME"     = azurerm_storage_account.main.name
     # Use Key Vault reference for storage connection (Microsoft best practice)
-    "AzureWebJobsStorage"            = "@Microsoft.KeyVault(VaultName=${azurerm_key_vault.main.name};SecretName=storage-connection-string)"
-    "AZURE_OPENAI_DEPLOYMENT"        = var.azure_openai_deployment
+    "AzureWebJobsStorage"             = "@Microsoft.KeyVault(VaultName=${azurerm_key_vault.main.name};SecretName=storage-connection-string)"
+    "AZURE_OPENAI_DEPLOYMENT"         = var.azure_openai_deployment
     "WEBSITE_ENABLE_SYNC_UPDATE_SITE" = "true"
   }
 
@@ -365,8 +365,8 @@ resource "azurerm_container_app" "openclaw_gateway" {
   }
 
   template {
-    min_replicas = 1  # Gateway needs to stay running for WebSocket connections
-    max_replicas = 1  # Single instance for session state
+    min_replicas = 1 # Gateway needs to stay running for WebSocket connections
+    max_replicas = 1 # Single instance for session state
 
     container {
       name   = "openclaw-gateway"

@@ -56,13 +56,13 @@ variable "enable_discord" {
 variable "function_plan_sku" {
   description = "Function App plan SKU (Y1=Consumption/Free, B1=Basic)"
   type        = string
-  default     = "Y1"  # Consumption tier - FREE
+  default     = "Y1" # Consumption tier - FREE
 }
 
 variable "keyvault_network_default_action" {
   description = "Key Vault network ACL default action. Use 'Deny' for production with private endpoints."
   type        = string
-  default     = "Allow"  # Changed from Deny to allow deployment, secured via RBAC
+  default     = "Allow" # Changed from Deny to allow deployment, secured via RBAC
 
   validation {
     condition     = contains(["Allow", "Deny"], var.keyvault_network_default_action)
