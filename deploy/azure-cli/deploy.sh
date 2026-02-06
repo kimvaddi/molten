@@ -255,6 +255,87 @@ create_function_app() {
 }
 
 # =============================================================================
+# Create Agent Container App
+# =============================================================================
+create_container_app() {
+    CAE_NAME="${PROJECT_NAME}-${ENVIRONMENT}-cae"
+    AGENT_NAME="${PROJECT_NAME}-${ENVIRONMENT}-agent"
+    KEY_VAULT_NAME="${PROJECT_NAME}-${ENVIRONMENT}-kv"
+    STORAGE_NAME="${PROJECT_NAME}${ENVIRONMENT}stor"
+    APP_INSIGHTS_NAME="${PROJECT_NAME}-${ENVIRONMENT}-insights"
+    LOG_ANALYTICS_NAME="${PROJECT_NAME}-${ENVIRONMENT}-logs"
+
+    log_info "Creating Container Apps Environment: $CAE_NAME"
+
+    LOG_ANALYTICS_CUSTOMER_ID=$(az monitor log-analytics workspace show \
+        --workspace-name "$LOG_ANALYTICS_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --query customerId -o tsv)
+
+    LOG_ANALYTICS_KEY=$(az monitor log-analytics workspace get-shared-keys \
+        --workspace-name "$LOG_ANALYTICS_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --query primarySharedKey -o tsv)
+
+    az containerapp env create \
+        --name "$CAE_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --location "$LOCATION" \
+        --logs-workspace-id "$LOG_ANALYTICS_CUSTOMER_ID" \
+        --logs-workspace-key "$LOG_ANALYTICS_KEY"
+
+    APP_INSIGHTS_CONN=$(az monitor app-insights component show \
+        --app "$APP_INSIGHTS_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --query connectionString -o tsv)
+
+    log_info "Creating Agent Container App: $AGENT_NAME"
+
+    az containerapp create \
+        --name "$AGENT_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --environment "$CAE_NAME" \
+        --image "${AGENT_IMAGE:-ghcr.io/kimvaddi/molten:latest}" \
+        --cpu 0.25 \
+        --memory 0.5Gi \
+        --min-replicas 0 \
+        --max-replicas 2 \
+        --ingress internal \
+        --target-port 8080 \
+        --transport http \
+        --system-assigned \
+        --env-vars \
+            "STORAGE_ACCOUNT_NAME=$STORAGE_NAME" \
+            "QUEUE_NAME=molten-work" \
+            "KEY_VAULT_URI=https://${KEY_VAULT_NAME}.vault.azure.net/" \
+            "AZURE_OPENAI_DEPLOYMENT=$AZURE_OPENAI_DEPLOYMENT" \
+            "APPLICATIONINSIGHTS_CONNECTION_STRING=$APP_INSIGHTS_CONN" \
+            "PORT=8080"
+
+    # Get Agent identity and grant RBAC roles
+    AGENT_PRINCIPAL_ID=$(az containerapp identity show \
+        --name "$AGENT_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --query principalId -o tsv)
+
+    KEY_VAULT_ID=$(az keyvault show --name "$KEY_VAULT_NAME" --query id -o tsv)
+    STORAGE_ID=$(az storage account show --name "$STORAGE_NAME" --query id -o tsv)
+
+    log_info "Granting Agent Managed Identity roles..."
+
+    az role assignment create --role "Key Vault Secrets User" \
+        --assignee "$AGENT_PRINCIPAL_ID" --scope "$KEY_VAULT_ID"
+    az role assignment create --role "Storage Queue Data Contributor" \
+        --assignee "$AGENT_PRINCIPAL_ID" --scope "$STORAGE_ID"
+    az role assignment create --role "Storage Blob Data Contributor" \
+        --assignee "$AGENT_PRINCIPAL_ID" --scope "$STORAGE_ID"
+    az role assignment create --role "Storage Table Data Contributor" \
+        --assignee "$AGENT_PRINCIPAL_ID" --scope "$STORAGE_ID"
+
+    log_info "Agent Container App created with Managed Identity"
+}
+
+# =============================================================================
 # Print Summary
 # =============================================================================
 print_summary() {
@@ -268,6 +349,7 @@ print_summary() {
     echo "Resources Created:"
     echo "  Resource Group: $RESOURCE_GROUP"
     echo "  Function App: $FUNC_APP_NAME"
+    echo "  Agent Container App: ${PROJECT_NAME}-${ENVIRONMENT}-agent"
     echo "  Key Vault: ${PROJECT_NAME}-${ENVIRONMENT}-kv"
     echo "  Storage: ${PROJECT_NAME}${ENVIRONMENT}stor"
     echo ""
@@ -279,6 +361,9 @@ print_summary() {
     echo "Next Steps:"
     echo "  1. cd src/functions && npm install && npm run build"
     echo "  2. func azure functionapp publish $FUNC_APP_NAME"
+    echo "  3. cd src/agent && docker build -t ghcr.io/kimvaddi/molten:latest ."
+    echo "  4. docker push ghcr.io/kimvaddi/molten:latest"
+    echo "  5. az containerapp update -n ${PROJECT_NAME}-${ENVIRONMENT}-agent -g $RESOURCE_GROUP --image ghcr.io/kimvaddi/molten:latest"
     echo "  3. Configure Telegram webhook:"
     echo "     curl -X POST \"https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://${FUNC_APP_NAME}.azurewebsites.net/api/telegram\""
     echo ""
@@ -307,6 +392,7 @@ main() {
     create_key_vault
     create_monitoring
     create_function_app
+    create_container_app
     print_summary
 }
 

@@ -23,3 +23,38 @@ enable_discord = false
 # Y1 = Consumption (free tier) - 1M executions/month free
 # B1 = Basic ($13/mo) - use if Y1 fails with quota error
 function_plan_sku = "Y1"
+
+# ============================================================
+# Agent Container App
+# ============================================================
+# Container image for the agent. Default uses GHCR (free for public repos).
+# Set enable_acr = true to use Azure Container Registry instead (~$5/month).
+# ============================================================
+
+agent_container_image = "ghcr.io/kimvaddi/molten:latest"
+enable_acr            = false
+
+# ============================================================
+# OpenClaw Integration (Optional)
+# ============================================================
+# Enable OpenClaw Gateway as an Azure Container App for enhanced AI capabilities:
+# - Full skills ecosystem (ClawHub registry)
+# - Multi-channel routing (WhatsApp, Signal, iMessage, etc.)
+# - Advanced session management
+# - Voice and canvas support
+#
+# When enabled, Terraform deploys OpenClaw Gateway as a Container App
+# alongside moltbot-dev-agent in the same Container Apps Environment.
+# ============================================================
+
+enable_openclaw = false
+
+# OpenClaw model preference (when using OpenClaw, this overrides azure_openai_deployment)
+# Examples: anthropic/claude-sonnet-4-20250514, anthropic/claude-opus-4-6, openai/gpt-4o
+openclaw_model = "anthropic/claude-sonnet-4-20250514"
+
+# OpenClaw thinking level: off, minimal, low, medium, high, xhigh
+openclaw_thinking = "low"
+
+# OpenClaw Gateway authentication token (secure the WebSocket endpoint)
+openclaw_gateway_token = ""

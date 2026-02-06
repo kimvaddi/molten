@@ -2,9 +2,30 @@ import fetch from "node-fetch";
 import { DefaultAzureCredential } from "@azure/identity";
 import { SecretClient } from "@azure/keyvault-secrets";
 
-interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
+export interface ChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_call_id?: string;
+  tool_calls?: ToolCall[];
+  name?: string;
+}
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface ChatCompletionChoice {
+  message: {
+    role: string;
+    content: string | null;
+    tool_calls?: ToolCall[];
+  };
+  finish_reason: string;
 }
 
 interface ModelContext {
@@ -155,17 +176,24 @@ async function searchWeb(query: string): Promise<TavilyResult[]> {
   }
 }
 
-const SYSTEM_PROMPT = `You are Molten, a personal AI assistant built on Azure.
+export const SYSTEM_PROMPT = `You are Molten, a personal AI assistant built on Azure.
 
 ABOUT YOU:
 - You are Molten, created as an Azure-based personal AI agent
-- You help with tasks, answer questions, and assist users via Telegram
+- You help with tasks, answer questions, and assist users via Telegram, Slack, and Discord
 - You were forged from Cloudflare's Moltworker project but run on Azure infrastructure
-- You can search the web for current information when needed
+- You have access to tools for web search, file editing, command execution, email, and calendar management
+
+TOOL USAGE:
+- Use web_search to find current information, news, or facts you are unsure about
+- Use bash to run shell commands when computation or system interaction is needed
+- Use text_editor to create or modify files
+- Use calendar_create and email_send for productivity tasks when asked
+- Always explain what you did when using tools
 
 SAFETY RULES:
-- Never execute harmful code
-- Never share sensitive information
+- Never execute harmful or destructive commands
+- Never share sensitive information or credentials
 - Be concise but friendly
 - When using search results, cite your sources`;
 
@@ -237,6 +265,75 @@ export async function callModel(
   }
 
   return content;
+}
+
+/**
+ * Call Azure OpenAI with tool/function-calling support.
+ * Returns the full choice object so the caller can inspect tool_calls.
+ * Includes retry with backoff for 429 rate-limit errors.
+ */
+const MAX_RETRIES = 3;
+
+export async function callModelWithTools(
+  messages: ChatMessage[],
+  tools?: any[],
+): Promise<ChatCompletionChoice> {
+  const endpoint = await getEndpoint();
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o-mini";
+
+  if (!endpoint) {
+    throw new Error("Azure OpenAI endpoint not configured");
+  }
+
+  const body: Record<string, any> = {
+    messages,
+    max_tokens: 1024,
+    temperature: 0.3,
+  };
+
+  if (tools && tools.length > 0) {
+    body.tools = tools;
+    body.tool_choice = "auto";
+  }
+
+  const url = `${endpoint}openai/deployments/${deployment}/chat/completions?api-version=2024-10-01-preview`;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const accessToken = await getAccessToken();
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.status === 429 && attempt < MAX_RETRIES) {
+      // Parse retry-after header or use exponential backoff
+      const retryAfter = response.headers.get("retry-after");
+      const waitSec = retryAfter ? Math.min(parseInt(retryAfter, 10), 60) : Math.pow(2, attempt + 1) * 5;
+      console.warn(`Rate limited (429), retrying in ${waitSec}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      await new Promise((r) => setTimeout(r, waitSec * 1000));
+      continue;
+    }
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Azure OpenAI error: ${response.status} - ${error}`);
+    }
+
+    const data = (await response.json()) as any;
+
+    if (data.usage) {
+      console.log(`Tokens: prompt=${data.usage.prompt_tokens}, completion=${data.usage.completion_tokens}`);
+    }
+
+    return data.choices[0];
+  }
+
+  throw new Error("Azure OpenAI: max retries exceeded for rate limiting");
 }
 
 function hashString(str: string): string {

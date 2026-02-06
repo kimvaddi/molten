@@ -10,6 +10,7 @@
     - Log Analytics Workspace
     - Application Insights
     - Azure Function App (Consumption tier)
+    - Container Apps Environment + Agent Container App
 
 .PARAMETER ProjectName
     Name of the project (default: molten)
@@ -65,6 +66,8 @@ $LogAnalyticsName = "$ProjectName-$Environment-logs"
 $AppInsightsName = "$ProjectName-$Environment-insights"
 $FunctionPlanName = "$ProjectName-$Environment-func-plan"
 $FunctionAppName = "$ProjectName-$Environment-func"
+$CAEName = "$ProjectName-$Environment-cae"
+$AgentAppName = "$ProjectName-$Environment-agent"
 
 $Tags = @{
     Project = $ProjectName
@@ -315,6 +318,80 @@ function New-MoltenFunctionApp {
 }
 
 # =============================================================================
+# Create Agent Container App (uses az CLI for Container Apps)
+# =============================================================================
+function New-MoltenContainerApp {
+    param($AppInsights, $Storage, $KeyVault)
+
+    Write-Step "Creating Container Apps Environment: $CAEName"
+
+    # Ensure containerapp extension is installed
+    az extension add --name containerapp --upgrade --only-show-errors 2>$null
+
+    $logCustomerId = (Get-AzOperationalInsightsWorkspace `
+        -ResourceGroupName $ResourceGroupName `
+        -Name $LogAnalyticsName).CustomerId
+
+    $logKey = (Get-AzOperationalInsightsWorkspaceSharedKey `
+        -ResourceGroupName $ResourceGroupName `
+        -WorkspaceName $LogAnalyticsName).PrimarySharedKey
+
+    az containerapp env create `
+        --name $CAEName `
+        --resource-group $ResourceGroupName `
+        --location $Location `
+        --logs-workspace-id $logCustomerId `
+        --logs-workspace-key $logKey
+
+    $agentImage = if ($env:AGENT_IMAGE) { $env:AGENT_IMAGE } else { "ghcr.io/kimvaddi/molten:latest" }
+
+    Write-Step "Creating Agent Container App: $AgentAppName"
+
+    az containerapp create `
+        --name $AgentAppName `
+        --resource-group $ResourceGroupName `
+        --environment $CAEName `
+        --image $agentImage `
+        --cpu 0.25 `
+        --memory 0.5Gi `
+        --min-replicas 0 `
+        --max-replicas 2 `
+        --ingress internal `
+        --target-port 8080 `
+        --transport http `
+        --system-assigned `
+        --env-vars `
+            "STORAGE_ACCOUNT_NAME=$StorageAccountName" `
+            "QUEUE_NAME=molten-work" `
+            "KEY_VAULT_URI=$($KeyVault.VaultUri)" `
+            "AZURE_OPENAI_DEPLOYMENT=$AzureOpenAIDeployment" `
+            "APPLICATIONINSIGHTS_CONNECTION_STRING=$($AppInsights.ConnectionString)" `
+            "PORT=8080"
+
+    $agentPrincipalId = az containerapp identity show `
+        --name $AgentAppName `
+        --resource-group $ResourceGroupName `
+        --query principalId -o tsv
+
+    Write-Log "Granting Agent Managed Identity roles..."
+
+    New-AzRoleAssignment -ObjectId $agentPrincipalId `
+        -RoleDefinitionName "Key Vault Secrets User" `
+        -Scope $KeyVault.ResourceId | Out-Null
+    New-AzRoleAssignment -ObjectId $agentPrincipalId `
+        -RoleDefinitionName "Storage Queue Data Contributor" `
+        -Scope $Storage.Id | Out-Null
+    New-AzRoleAssignment -ObjectId $agentPrincipalId `
+        -RoleDefinitionName "Storage Blob Data Contributor" `
+        -Scope $Storage.Id | Out-Null
+    New-AzRoleAssignment -ObjectId $agentPrincipalId `
+        -RoleDefinitionName "Storage Table Data Contributor" `
+        -Scope $Storage.Id | Out-Null
+
+    Write-Success "Agent Container App created with Managed Identity"
+}
+
+# =============================================================================
 # Print Summary
 # =============================================================================
 function Write-DeploymentSummary {
@@ -326,6 +403,7 @@ function Write-DeploymentSummary {
     Write-Host "Resources Created:" -ForegroundColor Yellow
     Write-Host "  Resource Group:      $ResourceGroupName"
     Write-Host "  Function App:        $FunctionAppName"
+    Write-Host "  Agent Container App: $AgentAppName"
     Write-Host "  Key Vault:          $KeyVaultName"
     Write-Host "  Storage Account:     $StorageAccountName"
     Write-Host "  Log Analytics:       $LogAnalyticsName"
@@ -342,7 +420,13 @@ function Write-DeploymentSummary {
     Write-Host "     npm install && npm run build"
     Write-Host "     func azure functionapp publish $FunctionAppName"
     Write-Host ""
-    Write-Host "  2. Configure Telegram webhook:"
+    Write-Host "  2. Build and push agent image:"
+    Write-Host "     cd src/agent"
+    Write-Host "     docker build -t ghcr.io/kimvaddi/molten:latest ."
+    Write-Host "     docker push ghcr.io/kimvaddi/molten:latest"
+    Write-Host "     az containerapp update -n $AgentAppName -g $ResourceGroupName --image ghcr.io/kimvaddi/molten:latest"
+    Write-Host ""
+    Write-Host "  3. Configure Telegram webhook:"
     Write-Host "     Invoke-RestMethod -Method Post -Uri `"https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://$FunctionAppName.azurewebsites.net/api/telegram`""
     Write-Host ""
 }
@@ -371,6 +455,7 @@ function Start-Deployment {
     $kv = New-MoltenKeyVault
     $appInsights = New-MoltenMonitoring
     $funcApp = New-MoltenFunctionApp -AppInsights $appInsights -Storage $storage -KeyVault $kv
+    New-MoltenContainerApp -AppInsights $appInsights -Storage $storage -KeyVault $kv
     
     Write-DeploymentSummary
 }

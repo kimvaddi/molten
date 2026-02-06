@@ -70,6 +70,44 @@ variable "keyvault_network_default_action" {
   }
 }
 
+# OpenClaw integration variables
+variable "enable_acr" {
+  description = "Enable Azure Container Registry (set false to use GHCR or pre-built images)"
+  type        = bool
+  default     = false
+}
+
+variable "agent_container_image" {
+  description = "Container image for the agent (e.g., ghcr.io/kimvaddi/molten:latest)"
+  type        = string
+  default     = "ghcr.io/kimvaddi/molten:latest"
+}
+
+variable "enable_openclaw" {
+  description = "Enable OpenClaw Gateway as an Azure Container App"
+  type        = bool
+  default     = false
+}
+
+variable "openclaw_model" {
+  description = "OpenClaw model preference (e.g. anthropic/claude-sonnet-4-20250514)"
+  type        = string
+  default     = "anthropic/claude-sonnet-4-20250514"
+}
+
+variable "openclaw_thinking" {
+  description = "OpenClaw thinking level: off, minimal, low, medium, high, xhigh"
+  type        = string
+  default     = "low"
+}
+
+variable "openclaw_gateway_token" {
+  description = "OpenClaw Gateway authentication token"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 locals {
   resource_prefix = "${var.project_name}-${var.environment}"
   tags = {

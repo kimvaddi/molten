@@ -2,6 +2,7 @@ import { DefaultAzureCredential } from "@azure/identity";
 import { SecretClient } from "@azure/keyvault-secrets";
 import { spawn } from "child_process";
 import { CosmosClient } from "@azure/cosmos";
+import fetch from "node-fetch";
 import * as crypto from "crypto";
 
 /**
@@ -47,6 +48,8 @@ export class SkillsRegistry {
   private keyVaultUri: string;
   private cosmosClient?: CosmosClient;
   private pythonPath: string;
+  private cachedTavilyKey: string | null = null;
+  private cachedGraphToken: { token: string; expiresOn: number } | null = null;
 
   constructor(config: { keyVaultUri: string; cosmosEndpoint?: string }) {
     this.keyVaultUri = config.keyVaultUri;
@@ -106,8 +109,8 @@ export class SkillsRegistry {
             description: "Editor operation" 
           },
           path: { type: "string", description: "File path" },
-          content: { type: "string", description: "Content to write/insert" },
-          line_number: { type: "number", description: "Line number for insert/replace" },
+          content: { type: "string", description: "Content to write/insert", optional: true },
+          line_number: { type: "number", description: "Line number for insert/replace", optional: true },
         },
       },
     ];
@@ -144,7 +147,7 @@ export class SkillsRegistry {
           title: { type: "string", description: "Event title" },
           start: { type: "string", description: "Start datetime (ISO 8601)" },
           end: { type: "string", description: "End datetime (ISO 8601)" },
-          attendees: { type: "array", items: { type: "string" }, description: "Attendee emails" },
+          attendees: { type: "array", items: { type: "string" }, description: "Attendee emails", optional: true },
         },
         execute: async (params) => await this.executeCalendarCreate(params),
       },
@@ -356,18 +359,104 @@ export class SkillsRegistry {
   }
 
   /**
-   * Web search using Tavily (already integrated in azureOpenAI.ts)
+   * Get Tavily API key from env var or Key Vault
+   */
+  private async getTavilyApiKey(): Promise<string | null> {
+    if (this.cachedTavilyKey) return this.cachedTavilyKey;
+
+    if (process.env.TAVILY_API_KEY) {
+      this.cachedTavilyKey = process.env.TAVILY_API_KEY;
+      return this.cachedTavilyKey;
+    }
+
+    if (this.keyVaultUri) {
+      try {
+        const client = new SecretClient(this.keyVaultUri, this.credential);
+        const secret = await client.getSecret("tavily-api-key");
+        this.cachedTavilyKey = secret.value || null;
+        console.log("Tavily API key loaded from Key Vault");
+        return this.cachedTavilyKey;
+      } catch (err) {
+        console.warn("Tavily API key not found in Key Vault");
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get Microsoft Graph access token via Managed Identity
+   */
+  private async getGraphAccessToken(): Promise<string> {
+    if (this.cachedGraphToken && this.cachedGraphToken.expiresOn > Date.now() + 300000) {
+      return this.cachedGraphToken.token;
+    }
+
+    console.log("Getting Microsoft Graph access token...");
+    const tokenResponse = await this.credential.getToken("https://graph.microsoft.com/.default");
+
+    this.cachedGraphToken = {
+      token: tokenResponse.token,
+      expiresOn: tokenResponse.expiresOnTimestamp,
+    };
+
+    return this.cachedGraphToken.token;
+  }
+
+  /**
+   * Web search using Tavily API
    */
   private async executeWebSearch(params: { query: string; max_results?: number }): Promise<SkillResult> {
-    // Delegate to existing Tavily integration
-    // See src/agent/src/llm/azureOpenAI.ts for implementation
-    return {
-      success: true,
-      data: {
-        message: "Web search delegated to Tavily integration in azureOpenAI.ts",
-        query: params.query,
-      },
-    };
+    const apiKey = await this.getTavilyApiKey();
+    if (!apiKey) {
+      return {
+        success: false,
+        error: "Tavily API key not configured. Set TAVILY_API_KEY env var or add tavily-api-key to Key Vault.",
+      };
+    }
+
+    console.log(`Web search: ${params.query}`);
+
+    try {
+      const response = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: apiKey,
+          query: params.query,
+          search_depth: "basic",
+          max_results: params.max_results || 5,
+          include_answer: false,
+          include_raw_content: false,
+        }),
+      });
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `Tavily search failed: ${response.status} ${response.statusText}`,
+        };
+      }
+
+      const data = (await response.json()) as any;
+      const results = (data.results || []).map((r: any) => ({
+        title: r.title,
+        url: r.url,
+        content: r.content,
+      }));
+
+      console.log(`Found ${results.length} search results`);
+
+      return {
+        success: true,
+        data: { results, query: params.query },
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Web search error: ${err.message}`,
+      };
+    }
   }
 
   /**
@@ -379,11 +468,68 @@ export class SkillsRegistry {
     end: string;
     attendees?: string[];
   }): Promise<SkillResult> {
-    // TODO: Implement Microsoft Graph API integration
-    return {
-      success: false,
-      error: "Calendar skill not yet implemented - requires Microsoft Graph SDK",
-    };
+    const senderEmail = process.env.GRAPH_SENDER_EMAIL;
+    if (!senderEmail) {
+      return {
+        success: false,
+        error: "GRAPH_SENDER_EMAIL not configured. Set the env var to the user mailbox to manage.",
+      };
+    }
+
+    try {
+      const accessToken = await this.getGraphAccessToken();
+
+      const event: Record<string, any> = {
+        subject: params.title,
+        start: { dateTime: params.start, timeZone: "UTC" },
+        end: { dateTime: params.end, timeZone: "UTC" },
+      };
+
+      if (params.attendees && params.attendees.length > 0) {
+        event.attendees = params.attendees.map((email) => ({
+          emailAddress: { address: email },
+          type: "required",
+        }));
+      }
+
+      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(senderEmail)}/events`;
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(event),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        return {
+          success: false,
+          error: `Graph API error: ${response.status} - ${error}`,
+        };
+      }
+
+      const created = (await response.json()) as any;
+      console.log(`Calendar event created: ${created.id}`);
+
+      return {
+        success: true,
+        data: {
+          id: created.id,
+          subject: created.subject,
+          start: created.start,
+          end: created.end,
+          webLink: created.webLink,
+        },
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Calendar error: ${err.message}`,
+      };
+    }
   }
 
   /**
@@ -394,11 +540,67 @@ export class SkillsRegistry {
     subject: string;
     body: string;
   }): Promise<SkillResult> {
-    // TODO: Implement Microsoft Graph API integration
-    return {
-      success: false,
-      error: "Email skill not yet implemented - requires Microsoft Graph SDK",
-    };
+    const senderEmail = process.env.GRAPH_SENDER_EMAIL;
+    if (!senderEmail) {
+      return {
+        success: false,
+        error: "GRAPH_SENDER_EMAIL not configured. Set the env var to the sender mailbox.",
+      };
+    }
+
+    try {
+      const accessToken = await this.getGraphAccessToken();
+
+      const mailBody = {
+        message: {
+          subject: params.subject,
+          body: {
+            contentType: params.body.includes("<") ? "HTML" : "Text",
+            content: params.body,
+          },
+          toRecipients: [
+            { emailAddress: { address: params.to } },
+          ],
+        },
+        saveToSentItems: true,
+      };
+
+      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(senderEmail)}/sendMail`;
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(mailBody),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        return {
+          success: false,
+          error: `Graph API error: ${response.status} - ${error}`,
+        };
+      }
+
+      // sendMail returns 202 Accepted with no body
+      console.log(`Email sent to ${params.to}`);
+
+      return {
+        success: true,
+        data: {
+          to: params.to,
+          subject: params.subject,
+          status: "sent",
+        },
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Email error: ${err.message}`,
+      };
+    }
   }
 
   /**
@@ -432,6 +634,7 @@ export class SkillsRegistry {
           description: paramDef.description,
           ...(paramDef.enum && { enum: paramDef.enum }),
           ...(paramDef.default !== undefined && { default: paramDef.default }),
+          ...(paramDef.items && { items: paramDef.items }),
         };
       } else {
         // Legacy format: just type string
@@ -449,7 +652,7 @@ export class SkillsRegistry {
     return Object.entries(parameters)
       .filter(([_, paramDef]) => {
         if (typeof paramDef === "object") {
-          return paramDef.default === undefined;
+          return paramDef.default === undefined && paramDef.optional !== true;
         }
         return true;
       })

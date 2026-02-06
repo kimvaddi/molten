@@ -234,6 +234,84 @@ function New-FunctionApp {
 }
 
 # =============================================================================
+# Create Agent Container App
+# =============================================================================
+function New-ContainerApp {
+    $caeName = "$ProjectName-$Environment-cae"
+    $agentName = "$ProjectName-$Environment-agent"
+    $keyVaultName = "$ProjectName-$Environment-kv"
+    $storageName = "$ProjectName$($Environment)stor"
+    $appInsightsName = "$ProjectName-$Environment-insights"
+    $logAnalyticsName = "$ProjectName-$Environment-logs"
+
+    Write-Log "Creating Container Apps Environment: $caeName"
+
+    $logCustomerId = az monitor log-analytics workspace show `
+        --workspace-name $logAnalyticsName `
+        --resource-group $ResourceGroup `
+        --query customerId -o tsv
+
+    $logKey = az monitor log-analytics workspace get-shared-keys `
+        --workspace-name $logAnalyticsName `
+        --resource-group $ResourceGroup `
+        --query primarySharedKey -o tsv
+
+    az containerapp env create `
+        --name $caeName `
+        --resource-group $ResourceGroup `
+        --location $Location `
+        --logs-workspace-id $logCustomerId `
+        --logs-workspace-key $logKey
+
+    $appInsightsConn = az monitor app-insights component show `
+        --app $appInsightsName `
+        --resource-group $ResourceGroup `
+        --query connectionString -o tsv
+
+    $agentImage = if ($env:AGENT_IMAGE) { $env:AGENT_IMAGE } else { "ghcr.io/kimvaddi/molten:latest" }
+
+    Write-Log "Creating Agent Container App: $agentName"
+
+    az containerapp create `
+        --name $agentName `
+        --resource-group $ResourceGroup `
+        --environment $caeName `
+        --image $agentImage `
+        --cpu 0.25 `
+        --memory 0.5Gi `
+        --min-replicas 0 `
+        --max-replicas 2 `
+        --ingress internal `
+        --target-port 8080 `
+        --transport http `
+        --system-assigned `
+        --env-vars `
+            "STORAGE_ACCOUNT_NAME=$storageName" `
+            "QUEUE_NAME=molten-work" `
+            "KEY_VAULT_URI=https://$keyVaultName.vault.azure.net/" `
+            "AZURE_OPENAI_DEPLOYMENT=$($script:AzureOpenAIDeployment)" `
+            "APPLICATIONINSIGHTS_CONNECTION_STRING=$appInsightsConn" `
+            "PORT=8080"
+
+    $agentPrincipalId = az containerapp identity show `
+        --name $agentName `
+        --resource-group $ResourceGroup `
+        --query principalId -o tsv
+
+    $keyVaultId = az keyvault show --name $keyVaultName --query id -o tsv
+    $storageId = az storage account show --name $storageName --query id -o tsv
+
+    Write-Log "Granting Agent Managed Identity roles..."
+
+    az role assignment create --role "Key Vault Secrets User" --assignee $agentPrincipalId --scope $keyVaultId
+    az role assignment create --role "Storage Queue Data Contributor" --assignee $agentPrincipalId --scope $storageId
+    az role assignment create --role "Storage Blob Data Contributor" --assignee $agentPrincipalId --scope $storageId
+    az role assignment create --role "Storage Table Data Contributor" --assignee $agentPrincipalId --scope $storageId
+
+    Write-Log "Agent Container App created with Managed Identity"
+}
+
+# =============================================================================
 # Print Summary
 # =============================================================================
 function Write-Summary {
@@ -247,6 +325,7 @@ function Write-Summary {
     Write-Host "Resources Created:"
     Write-Host "  Resource Group: $ResourceGroup"
     Write-Host "  Function App: $funcAppName"
+    Write-Host "  Agent Container App: $ProjectName-$Environment-agent"
     Write-Host "  Key Vault: $ProjectName-$Environment-kv"
     Write-Host "  Storage: $ProjectName$($Environment)stor"
     Write-Host ""
@@ -258,6 +337,9 @@ function Write-Summary {
     Write-Host "Next Steps:"
     Write-Host "  1. cd src/functions; npm install; npm run build"
     Write-Host "  2. func azure functionapp publish $funcAppName"
+    Write-Host "  3. cd src/agent; docker build -t ghcr.io/kimvaddi/molten:latest ."
+    Write-Host "  4. docker push ghcr.io/kimvaddi/molten:latest"
+    Write-Host "  5. az containerapp update -n $ProjectName-$Environment-agent -g $ResourceGroup --image ghcr.io/kimvaddi/molten:latest"
     Write-Host ""
 }
 
@@ -283,4 +365,5 @@ New-StorageAccount
 New-KeyVault
 New-MonitoringResources
 New-FunctionApp
+New-ContainerApp
 Write-Summary

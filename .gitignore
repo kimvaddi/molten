@@ -49,6 +49,20 @@ logs/
 deploy-*.log
 terraform-*.log
 
+# Debug/temp text files (build logs, Azure CLI outputs)
+build-log*.txt
+agent-logs*.txt
+latest-logs*.txt
+raw-logs*.txt
+v*-restart-logs*.txt
+acr-tags*.txt
+all-policies*.txt
+noncompliant*.txt
+
+# DrawIO temp files
+.$*.drawio.bkp
+.$*.drawio.dtmp
+
 # Shell history (if accidentally saved)
 .bash_history
 .zsh_history

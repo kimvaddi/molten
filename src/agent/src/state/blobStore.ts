@@ -19,7 +19,7 @@ export async function saveSession(
   userId: string,
   data: Record<string, unknown>
 ): Promise<void> {
-  const container = getClient().getContainerClient("moltbot-configs");
+  const container = getClient().getContainerClient("molten-configs");
   const blob = container.getBlockBlobClient(`sessions/${userId}.json`);
   await blob.upload(JSON.stringify(data), JSON.stringify(data).length, {
     blobHTTPHeaders: { blobContentType: "application/json" },
@@ -30,7 +30,7 @@ export async function loadSession(
   userId: string
 ): Promise<Record<string, unknown> | null> {
   try {
-    const container = getClient().getContainerClient("moltbot-configs");
+    const container = getClient().getContainerClient("molten-configs");
     const blob = container.getBlockBlobClient(`sessions/${userId}.json`);
     const response = await blob.download();
     const text = await streamToString(response.readableStreamBody!);

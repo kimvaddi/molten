@@ -29,7 +29,7 @@ export const config = {
   },
   storage: {
     accountName: process.env.STORAGE_ACCOUNT_NAME || "",
-    queueName: process.env.QUEUE_NAME || "moltbot-work",
+    queueName: process.env.QUEUE_NAME || "molten-work",
   },
   integrations: {
     telegram: !!process.env.TELEGRAM_BOT_TOKEN,

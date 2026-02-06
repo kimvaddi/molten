@@ -17,6 +17,19 @@
 | Bandwidth | $0.00 | First 100GB outbound/month free |
 | **TOTAL** | **~$8.03** | **Under $10/month for ~1,500 messages** |
 
+### OpenClaw Gateway (Optional)
+
+When `enable_openclaw = true`, an additional Container App is deployed:
+
+| Resource | Monthly Cost | Notes |
+|----------|--------------|-------|
+| OpenClaw Container App | ~$0-5 | 0.5 vCPU, 1Gi mem, min_replicas=1 (does NOT scale to zero) |
+| ACR (Basic) | ~$5 | Used for agent image builds (`<your-acr-name>`) |
+| Gateway token (Key Vault) | ~$0.003 | Additional secret operation |
+| **OpenClaw Subtotal** | **~$5-10** | **Increases total to ~$13-18/month** |
+
+> **Note**: The OpenClaw Gateway runs with `min_replicas=1` to maintain persistent WebSocket connections. This means it won't scale to zero and will consume Container Apps compute even when idle. Disable with `enable_openclaw = false` in Terraform to save costs.
+
 ### Azure OpenAI Pricing (GPT-4o-mini)
 
 | Token Type | Price per 1M Tokens |
@@ -32,15 +45,16 @@
 
 > **Tip**: Response caching can reduce this by 50-80%.
 
+> **Note on S0 tier**: The free S0 pricing tier allows only 10 requests/minute and 1,000 tokens/minute. The agent includes built-in 429 retry with exponential backoff (`Retry-After` header respect, max 3 retries). Tool-calling requires 2+ API calls per message, so rate limits may cause slight delays. Consider upgrading to S1 for higher throughput.
+
 ### Optional Services (Disabled by Default)
 
 | Service | SKU | Monthly Cost | Notes |
 |---------|-----|--------------|-------|
-| Container Registry | Basic | $5.00 | Use GitHub Container Registry instead (free) |
 | API Management | Consumption | $3.50/million calls | For rate limiting/governance |
 | Cosmos DB | Serverless | $0.25/million RU | Use Table Storage instead |
 
-> **Note**: Container Apps is now **included** in the base architecture and uses the free tier.
+> **Note**: Azure Container Registry (Basic, ~$5/mo) is active for agent image builds. Consider GitHub Container Registry for public repos to save costs.
 
 ## Cost Optimization Strategies
 
@@ -82,11 +96,11 @@ const body = {
 | Key Vault | 10K ops | Cache secrets in memory |
 | Log Analytics | 5GB/month | Sample logs, exclude verbose |
 
-### 5. GitHub Container Registry
+### 5. GitHub Container Registry (Alternative)
 
-- **Azure ACR Basic**: $5/month
+- **Azure ACR Basic**: ~$5/month (currently deployed: `<your-acr-name>`)
 - **GitHub Container Registry**: FREE for public repos
-- **Savings**: $5/month = $60/year
+- **Savings**: $5/month = $60/year if switched to GHCR
 
 ## Usage Scenarios
 

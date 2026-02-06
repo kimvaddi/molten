@@ -111,5 +111,35 @@ output "deployment_info" {
     region       = var.location
     function_url = "https://${azurerm_linux_function_app.main.default_hostname}"
     key_vault    = azurerm_key_vault.main.name
+    agent_image  = var.agent_container_image
+    openclaw     = var.enable_openclaw ? "enabled" : "disabled"
   }
+}
+
+# Agent Container App
+output "agent_container_app_name" {
+  description = "Name of the Agent Container App"
+  value       = azurerm_container_app.agent.name
+}
+
+output "agent_principal_id" {
+  description = "Principal ID of the Agent Managed Identity"
+  value       = azurerm_container_app.agent.identity[0].principal_id
+}
+
+# Container Registry (conditional)
+output "acr_login_server" {
+  description = "ACR login server (empty if ACR disabled)"
+  value       = var.enable_acr ? azurerm_container_registry.main[0].login_server : ""
+}
+
+# OpenClaw Gateway (conditional)
+output "openclaw_gateway_url" {
+  description = "OpenClaw Gateway WebSocket URL (internal to Container Apps)"
+  value       = var.enable_openclaw ? "wss://${azurerm_container_app.openclaw_gateway[0].ingress[0].fqdn}" : "disabled"
+}
+
+output "openclaw_gateway_fqdn" {
+  description = "OpenClaw Gateway FQDN"
+  value       = var.enable_openclaw ? azurerm_container_app.openclaw_gateway[0].ingress[0].fqdn : "disabled"
 }

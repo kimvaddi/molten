@@ -18,34 +18,41 @@ A self-hosted personal AI agent running on Azure's free tier services — inspir
 ## 🏗️ Architecture
 
 ```
-┌──────────────┐     HTTPS      ┌─────────────────────────────────────┐
-│  Telegram /  │───────────────►│  Azure Functions (Consumption)      │
-│  Slack /     │                │  • Webhook receiver                 │
-│  Discord     │◄───────────────│  • JWT validation                   │
-└──────────────┘    Response    │  • Queue dispatch                   │
-                                └──────────────┬──────────────────────┘
-                                               │
-                                               ▼
-                    ┌─────────────────────────────────────────────────┐
-                    │         Azure Storage Queue (Free Tier)         │
-                    │              Work item dispatch                 │
-                    └──────────────┬──────────────────────────────────┘
-                                   │
-                                   ▼
-                    ┌─────────────────────────────────────────────────┐
-                    │    Azure Container Apps (Consumption - FREE)    │
-                    │  • Molten Agent runtime                        │
-                    │  • OpenClaw.ai integration                      │
-                    │  • Scale-to-zero when idle                      │
-                    └──────────────┬──────────────────────────────────┘
-                                   │
-                    ┌──────────────┼──────────────┬───────────────────┐
-                    ▼              ▼              ▼                   ▼
-         ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-         │ Azure OpenAI │ │  Key Vault   │ │ Blob Storage │ │  App Insights│
-         │ GPT-4o-mini  │ │  (secrets)   │ │   (state)    │ │   (logs)     │
-         └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+ User ──► Telegram / Slack / Discord
+              │
+              ▼
+    ┌──────────────────┐     ┌────────────────────┐
+    │  Azure Functions │◄────│  Entra ID (ZT+MFA) │
+    │  JWT + Routing   │     └────────────────────┘
+    └────────┬─────────┘
+             │ Storage Queue
+             ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │  Container Apps Environment                                    │
+    │                                                                │
+    │  ┌─────────────────────────┐    ┌───────────────────────────┐  │
+    │  │  Agent (Container App)  │───►│  OpenClaw Gateway (opt.)  │  │
+    │  │  • Queue Worker         │    │  • ClawHub skills         │  │
+    │  │  • Tool-calling loop    │    │  • Multi-channel          │  │
+    │  │  • 429 retry + backoff  │    │  • wss:// internal only   │  │
+    │  └──────────┬──────────────┘    └───────────────────────────┘  │
+    │             │ fallback                                         │
+    └─────────────┼──────────────────────────────────────────────────┘
+                  │
+      ┌───────────┴───────────┐
+      ▼                       ▼
+ ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+ │ Azure OpenAI │     │  Key Vault   │     │ Blob + Table │
+ │ GPT-4o-mini  │     │  Secrets     │     │  Storage     │
+ │ Tool calling │     │  MI auth     │     │  State       │
+ └──────────────┘     └──────────────┘     └──────────────┘
 ```
+
+Key features of the current architecture:
+- **Tool-calling loop**: Agent calls Azure OpenAI with function definitions, executes tool results, loops up to 5 rounds
+- **429 retry with backoff**: Exponential backoff respecting `Retry-After` headers for rate-limited S0 tier
+- **OpenClaw fallback**: If OpenClaw Gateway is unavailable, seamlessly falls back to direct Azure OpenAI
+- **Queue-based processing**: Messages always deleted from queue (no retry stampede)
 
 See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 
@@ -71,19 +78,20 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 - Azure subscription (free tier works)
 - [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) >= 2.50
 - [Terraform](https://www.terraform.io/downloads) >= 1.5
-- [Node.js](https://nodejs.org/) >= 20 LTS
+- [Node.js](https://nodejs.org/) >= 20 LTS (agent container uses Node.js 22)
 - [Python](https://www.python.org/) >= 3.9 (for Anthropic skills)
 - [Azure Functions Core Tools](https://docs.microsoft.com/azure/azure-functions/functions-run-local) >= 4.x
 - Telegram Bot Token (from [@BotFather](https://t.me/botfather))
 - Azure OpenAI access (requires [application](https://aka.ms/oai/access))
 - *(Optional)* [Tavily API key](https://tavily.com/) for web search (~$0.01/search)
+- *(Optional)* OpenClaw for enhanced skills — deployed as Azure Container App (see `infra/terraform/main.tf`)
 
 ## 🚀 Quick Start
 
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/molten.git
+git clone https://github.com/kimvaddi/molten.git
 cd molten
 ```
 
@@ -204,18 +212,28 @@ See [docs/security-baseline.md](docs/security-baseline.md).
 ```
 molten/
 ├── infra/
-│   └── terraform/           # Terraform IaC (primary)
+│   └── terraform/              # Terraform IaC (primary)
 ├── deploy/
-│   ├── azure-cli/           # Azure CLI scripts
-│   ├── powershell/          # PowerShell deployment
-│   ├── arm/                  # ARM templates
-│   └── bicep/                # Bicep modules
+│   ├── azure-cli/              # Azure CLI scripts (bash + PowerShell)
+│   ├── powershell/             # Azure PowerShell deployment
+│   ├── arm/                    # ARM templates
+│   └── bicep/                  # Bicep modules
 ├── src/
-│   ├── functions/           # Azure Functions (webhooks + AI)
-│   ├── agent/               # Agent runtime (Container Apps - optional)
-│   └── shared/              # Shared utilities
-├── docs/                     # Architecture & documentation
-└── .github/workflows/        # CI/CD pipelines
+│   ├── functions/              # Azure Functions (webhooks + queue dispatch)
+│   ├── agent/                  # Agent runtime (Container Apps, Node.js 22)
+│   │   ├── Dockerfile          # Multi-stage build: node:22-alpine + python3
+│   │   └── src/
+│   │       ├── index.ts        # Express server, webhook endpoints, queue enqueue
+│   │       ├── queue-worker.ts # Queue consumer, tool-calling loop, OpenClaw fallback
+│   │       ├── openclaw/       # OpenClaw Gateway WebSocket client (10s timeout)
+│   │       ├── integrations/   # Telegram, Slack, Discord platform handlers
+│   │       ├── llm/            # Azure OpenAI (callModelWithTools, 429 retry, safety)
+│   │       ├── skills/         # Skills registry + anthropic_executor.py
+│   │       ├── state/          # Blob store + Table store
+│   │       └── utils/          # Cache (5-min TTL), auth, logging
+│   └── shared/                 # Shared types and config
+├── docs/                       # Architecture, cost, security, runbook
+└── .github/workflows/          # CI/CD pipelines
 ```
 
 ## 🚀 Deployment Options

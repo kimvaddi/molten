@@ -1,3 +1,10 @@
+// Polyfill globalThis.crypto for Azure SDK (@typespec/ts-http-runtime)
+// Must be before any Azure SDK imports
+import { webcrypto } from "node:crypto";
+if (typeof globalThis.crypto === "undefined") {
+  (globalThis as any).crypto = webcrypto;
+}
+
 import express from "express";
 import { consumeQueue } from "./queue-worker";
 import { QueueServiceClient } from "@azure/storage-queue";
@@ -118,7 +125,7 @@ app.get("/", (_req, res) => {
 // ============ QUEUE HELPER ============
 async function enqueueWork(workItem: Record<string, unknown>): Promise<void> {
   const storageAccountName = process.env.STORAGE_ACCOUNT_NAME;
-  const queueName = process.env.QUEUE_NAME || "moltbot-work";
+  const queueName = process.env.QUEUE_NAME || "molten-work";
 
   if (!storageAccountName) {
     console.error("STORAGE_ACCOUNT_NAME not set");

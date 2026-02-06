@@ -40,15 +40,23 @@
 
 ### Content Safety
 - Input validation on all webhooks
-- Prompt injection detection
-- Output sanitization (secrets redaction)
-- Token limits to prevent abuse
+- Prompt injection detection (`safety.ts`) — blocks "ignore previous instructions", "system prompt", "jailbreak"
+- Output sanitization (redacts long alphanumeric tokens)
+- Token limits (`max_tokens=512`) to prevent abuse
+- Input character limit: 4,000 characters
 
 ### Safety Patterns Blocked
 - `ignore previous instructions`
 - `system prompt`
 - `jailbreak`
 - Sensitive data patterns (passwords, API keys)
+
+### Runtime Security
+- **Node.js 22**: Uses `webcrypto` polyfill for compatibility
+- **Queue message handling**: Messages always deleted in `finally` block to prevent retry stampede
+- **OpenClaw timeout**: 10-second connection timeout prevents infinite hangs; graceful fallback to Azure OpenAI
+- **429 retry**: Exponential backoff with max 3 retries; respects `Retry-After` headers
+- **Skills sandboxing**: Python subprocess with 30s timeout, restricted to `/tmp`, dangerous commands blocked
 
 ## RBAC Assignments
 
@@ -59,6 +67,9 @@
 | Container App MI | Key Vault Secrets User | Key Vault |
 | Container App MI | Storage Blob Data Contributor | Storage |
 | Container App MI | Storage Queue Data Contributor | Storage |
+| OpenClaw MI | Cognitive Services OpenAI User | Azure OpenAI |
+| OpenClaw MI | Key Vault Secrets User | Key Vault |
+| OpenClaw MI | Storage Blob Data Contributor | Storage |
 
 ## Monitoring & Logging
 
