@@ -12,6 +12,10 @@ env:
   CONTAINER_APP_NAME: ${{ secrets.CONTAINER_APP_NAME }}
   RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -28,13 +32,13 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Build and Push to ACR
-        working-directory: src/agent
         run: |
           az acr build \
             --registry ${{ env.ACR_NAME }} \
             --image moltbot-agent:${{ github.sha }} \
             --image moltbot-agent:latest \
-            .
+            --file src/agent/Dockerfile \
+            src/agent/
 
       - name: Deploy to Container Apps
         run: |
