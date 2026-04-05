@@ -214,8 +214,11 @@ See: [deploy/arm/README.md](../deploy/arm/README.md) | [deploy/bicep/README.md](
 |---------|---------------|
 | **Slack integration** | Create Slack App → add bot token to Key Vault → configure webhook |
 | **Discord integration** | Create Discord Application → add bot token → configure webhook |
+| **WhatsApp integration** | Set `enable_whatsapp = true` in terraform.tfvars → add verify token + API token → configure Meta webhook URL |
 | **Tavily web search** | Sign up at [tavily.com](https://tavily.com/) → add API key to Key Vault |
 | **OpenClaw** | Set `enable_openclaw = true` in terraform.tfvars (Terraform only) |
+
+> **Conversation memory**: Your bot automatically remembers the last 20 messages in each chat (24h window) for multi-turn context.
 
 ## Troubleshooting
 
@@ -227,6 +230,7 @@ See: [deploy/arm/README.md](../deploy/arm/README.md) | [deploy/bicep/README.md](
 | **Container App not starting** | Check container logs: `az containerapp logs show --name molten-dev-agent --resource-group molten-dev-rg` |
 | **Key Vault access denied** | RBAC propagation can take 30–60 seconds. Wait and retry. |
 | **429 rate limit errors** | Normal on S0 tier. The agent has built-in exponential backoff with retry. |
+| **Messages stuck in queue** | Check poison queue: `az storage message peek --queue-name molten-work-poison --account-name <storage> --auth-mode login` — messages here failed 3+ times |
 | **Terraform state lock** | Run `terraform force-unlock <LOCK_ID>` if a previous run was interrupted |
 
 ## Cost Summary
@@ -242,3 +246,28 @@ See: [deploy/arm/README.md](../deploy/arm/README.md) | [deploy/bicep/README.md](
 | **Total** | **~$8/month** |
 
 See [docs/COST.md](COST.md) for optimization strategies.
+
+## Cleanup
+
+To tear down all Molten resources and stop billing:
+
+### Terraform
+
+```bash
+cd infra/terraform
+terraform destroy
+```
+
+### Azure CLI
+
+```bash
+./deploy/azure-cli/deploy.sh --cleanup
+```
+
+### Manual (Portal)
+
+1. Go to [Azure Portal](https://portal.azure.com) → **Resource groups**
+2. Select `molten-dev-rg`
+3. Click **Delete resource group** and confirm
+
+> **Tip**: After cleanup, verify nothing remains: `az group list --query "[?starts_with(name,'molten')]" -o table`

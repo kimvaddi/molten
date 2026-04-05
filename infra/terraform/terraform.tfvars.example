@@ -19,6 +19,20 @@ telegram_bot_token = ""
 enable_slack   = false
 enable_discord = false
 
+# ============================================================
+# WhatsApp Business Cloud API (Optional)
+# ============================================================
+# Get these from Meta Business Suite → WhatsApp → API Setup
+# Verify token: a string you choose, used to verify the webhook
+# API token: from Meta Developer Portal
+# Phone number ID: from WhatsApp Business API
+# ============================================================
+
+enable_whatsapp          = false
+whatsapp_verify_token    = ""
+whatsapp_api_token       = ""
+whatsapp_phone_number_id = ""
+
 # Function plan SKU
 # Y1 = Consumption (free tier) - 1M executions/month free
 # B1 = Basic ($13/mo) - use if Y1 fails with quota error

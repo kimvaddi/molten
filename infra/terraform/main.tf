@@ -23,11 +23,11 @@ resource "azurerm_storage_account" "main" {
     }
   }
 
-  # Network security: Allow access for dev (no private endpoints)
-  # For production, use "Deny" with private endpoints or VNet integration
+  # Network security: Deny by default, Azure services (Functions, Container Apps)
+  # access storage via Managed Identity which bypasses network rules
   public_network_access_enabled = true
   network_rules {
-    default_action             = "Allow"
+    default_action             = "Deny"
     bypass                     = ["AzureServices"]
     ip_rules                   = []
     virtual_network_subnet_ids = []
@@ -39,6 +39,18 @@ resource "azurerm_storage_account" "main" {
 # Storage Queue for work items
 resource "azurerm_storage_queue" "work" {
   name                 = "molten-work"
+  storage_account_name = azurerm_storage_account.main.name
+}
+
+# Dead-letter queue for failed messages
+resource "azurerm_storage_queue" "poison" {
+  name                 = "molten-work-poison"
+  storage_account_name = azurerm_storage_account.main.name
+}
+
+# Storage Table for conversation history
+resource "azurerm_storage_table" "conversations" {
+  name                 = "conversations"
   storage_account_name = azurerm_storage_account.main.name
 }
 
@@ -99,6 +111,25 @@ resource "azurerm_key_vault_secret" "telegram_token" {
   count        = var.telegram_bot_token != "" ? 1 : 0
   name         = "telegram-bot-token"
   value        = var.telegram_bot_token
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_role_assignment.deployer_kv]
+}
+
+# WhatsApp secrets (only when WhatsApp is enabled)
+resource "azurerm_key_vault_secret" "whatsapp_api_token" {
+  count        = var.enable_whatsapp && var.whatsapp_api_token != "" ? 1 : 0
+  name         = "whatsapp-api-token"
+  value        = var.whatsapp_api_token
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_role_assignment.deployer_kv]
+}
+
+resource "azurerm_key_vault_secret" "whatsapp_phone_number_id" {
+  count        = var.enable_whatsapp && var.whatsapp_phone_number_id != "" ? 1 : 0
+  name         = "whatsapp-phone-number-id"
+  value        = var.whatsapp_phone_number_id
   key_vault_id = azurerm_key_vault.main.id
 
   depends_on = [azurerm_role_assignment.deployer_kv]
@@ -236,7 +267,7 @@ resource "azurerm_container_registry" "main" {
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   sku                 = "Basic"
-  admin_enabled       = true
+  admin_enabled       = false # Use Managed Identity (AcrPull) instead of admin credentials
 
   tags = local.tags
 }
@@ -252,22 +283,12 @@ resource "azurerm_container_app" "agent" {
     type = "SystemAssigned"
   }
 
-  # ACR registry credentials (only when ACR is enabled)
+  # ACR registry credentials via Managed Identity (only when ACR is enabled)
   dynamic "registry" {
     for_each = var.enable_acr ? [1] : []
     content {
-      server               = azurerm_container_registry.main[0].login_server
-      username             = azurerm_container_registry.main[0].admin_username
-      password_secret_name = "acr-password"
-    }
-  }
-
-  # ACR password secret (only when ACR is enabled)
-  dynamic "secret" {
-    for_each = var.enable_acr ? [1] : []
-    content {
-      name  = "acr-password"
-      value = azurerm_container_registry.main[0].admin_password
+      server   = azurerm_container_registry.main[0].login_server
+      identity = azurerm_container_app.agent.identity[0].principal_id
     }
   }
 
@@ -344,6 +365,14 @@ resource "azurerm_role_assignment" "agent_queue" {
 resource "azurerm_role_assignment" "agent_table" {
   scope                = azurerm_storage_account.main.id
   role_definition_name = "Storage Table Data Contributor"
+  principal_id         = azurerm_container_app.agent.identity[0].principal_id
+}
+
+# Grant Agent AcrPull access to ACR (only when ACR is enabled)
+resource "azurerm_role_assignment" "agent_acr_pull" {
+  count                = var.enable_acr ? 1 : 0
+  scope                = azurerm_container_registry.main[0].id
+  role_definition_name = "AcrPull"
   principal_id         = azurerm_container_app.agent.identity[0].principal_id
 }
 

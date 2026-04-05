@@ -1,79 +1,85 @@
 # Project Guidelines
 
-Molten (MoltBot) is a self-hosted Azure AI agent providing chat capabilities via Telegram, Slack, and Discord. Targets <$10/month using Azure free tiers. Optional integration with [OpenClaw](https://github.com/openclaw/openclaw) for enhanced skills and multi-channel support.
+Molten (MoltBot) — self-hosted Azure AI agent for Telegram, Slack, Discord, WhatsApp. Targets <$10/month on Azure free tiers. Optional [OpenClaw](https://github.com/openclaw/openclaw) integration for enhanced skills.
 
 ## Architecture
 
-- **Azure Functions** (src/functions/) - Webhook receivers for platforms, JWT validation, queue dispatch
-- **Agent** (src/agent/) - Express server + queue worker, LLM calls, skills execution
-- **Skills** (src/agent/src/skills/) - TypeScript registry + Python subprocess executor
-- **Integrations** (src/agent/src/integrations/) - Platform-specific message handlers
-- **OpenClaw** (src/agent/src/openclaw/) - Optional Gateway client for enhanced AI capabilities
+Platform webhook → **Functions** (HMAC validate + enqueue) → Storage Queue (base64) → **Agent** queue-worker (poll) → [OpenClaw | Azure OpenAI] → Skills (up to 5 tool rounds) → Cache → Integration reply → Table Storage (history)
 
-Data flow: Platform webhook → Functions → Storage Queue → Agent → [OpenClaw Gateway | Azure OpenAI] → Skills → Cache → Reply
+| Layer | Path | Role |
+|-------|------|------|
+| Functions | `src/functions/` | Webhook receivers, signature validation, queue dispatch |
+| Agent | `src/agent/` | Express server, queue worker, LLM calls, skills |
+| Shared | `src/shared/` | Types (`types.ts`), config (`config.ts`), logger |
+| Infra | `infra/terraform/` | All Azure resources (Terraform recommended) |
+
+See [docs/architecture.md](docs/architecture.md) for detailed diagrams and component descriptions.
 
 ## Build and Test
 
 ```bash
 # Agent
-cd src/agent && npm install && npm run build   # tsc compile
-npm run dev                                      # ts-node-dev with respawn
+cd src/agent && npm install && npm run build && npm test
 
-# Functions  
-cd src/functions && npm install && npm run build
-npm run start                                    # func start locally
-npm test                                         # jest
+# Functions (requires Azure Functions Core Tools >= 4.x)
+cd src/functions && npm install && npm run build && npm test
 
 # Infrastructure
-cd infra/terraform && terraform init && terraform apply
+cd infra/terraform && terraform init && terraform validate
+
+# Local dev (optional Azurite emulator)
+docker compose -f docker-compose.dev.yml up
 ```
+
+- Jest with ts-jest preset; tests in `src/agent/src/__tests__/`
+- **>80% coverage** for new code; no live Azure calls — mock all SDK clients
+- Use `jest.useFakeTimers()` for TTL/expiry testing
+- Run `terraform validate` for any infrastructure changes
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full dev setup, PR process, and commit conventions.
 
 ## Code Style
 
-- TypeScript with strict mode, target ES2020, CommonJS modules
-- Async/await throughout; early return pattern for validation
-- Interface-first typing (see [types.ts](src/shared/types.ts))
-- Console.log/warn/error for structured logging to App Insights
-- Module-level caching for Azure SDK clients and secrets
+- TypeScript strict mode, ES2020, CommonJS modules
+- Async/await; early return for validation
+- Interface-first: define in `src/shared/types.ts` before implementing
+- Structured JSON logging via `src/agent/src/utils/logger.ts` — level controlled by `LOG_LEVEL`
+- Module-level caching for Azure SDK clients (initialize once at file scope)
+- Commits: `type(scope): description` — see [CONTRIBUTING.md](CONTRIBUTING.md)
 
-## Project Conventions
+## Conventions
 
-- **Secrets**: Always via Key Vault + Managed Identity, never in code. Use `@Microsoft.KeyVault(...)` syntax in app settings
-- **Authentication**: `DefaultAzureCredential` for all Azure service-to-service auth
-- **Response caching**: LLM responses cached with 5-min TTL in [cache.ts](src/agent/src/utils/cache.ts)
-- **Skills execution**: Python subprocess with JSON I/O, not SDK calls (see [anthropic_executor.py](src/agent/src/skills/anthropic_executor.py))
-- **Token caps**: max_tokens=512 in LLM calls to bound costs
+- **Secrets**: Key Vault + Managed Identity only, never in code. Use `@Microsoft.KeyVault(...)` in app settings
+- **Auth**: `DefaultAzureCredential` for all Azure service-to-service calls
+- **Webhooks**: Every platform validates HMAC before processing — see `src/agent/src/utils/auth.ts`
+- **Queue encoding**: Messages are base64-encoded; decode before parsing
+- **LLM costs**: max_tokens=512; response cache with 5-min TTL in `src/agent/src/utils/cache.ts`
+- **Input limit**: 4000 chars enforced at Functions and queue-worker layers
+- **Output sanitization**: Redacts 32+ char alphanumeric tokens as `[REDACTED]`
+- **Skills**: Python subprocess with JSON I/O, sandboxed to `/tmp`, 30s timeout, dangerous commands blocked
+- **Dockerfile**: Base image pinned to SHA256, `npm ci`, non-root user, health check
 
-## OpenClaw Integration
+## Extending the Project
 
-Optional integration with OpenClaw Gateway for enhanced capabilities:
-- **Skills**: Full ClawHub registry with bash, text_editor, browser, canvas
-- **Channels**: WhatsApp, Signal, iMessage, Microsoft Teams (in addition to Telegram/Slack/Discord)
-- **Models**: Anthropic Claude, OpenAI, and any OpenClaw-supported model
+**New platform**: Function in `src/functions/Http<Platform>/` (validate + enqueue) → handler in `src/agent/src/integrations/<platform>.ts` → add channel to `WorkItem` in `types.ts` → dispatch in `queue-worker.ts` → Key Vault + Terraform vars
 
-OpenClaw runs as a Container App in Azure (not locally). Enable via Terraform:
-```bash
-enable_openclaw = true
-openclaw_model  = "anthropic/claude-sonnet-4-20250514"
-```
+**New skill**: Register in `src/agent/src/skills/skillsRegistry.ts` with name + JSON schema → implement as TypeScript function or Python subprocess
 
-See [openclaw/gateway-client.ts](src/agent/src/openclaw/gateway-client.ts) for implementation.
+## Gotchas
 
-## Security
+- **S0 rate limit**: 10 req/min — tool loops (5 rounds max) can exhaust this quickly
+- **24h conversation TTL**: Table Storage messages purge after 24 hours
+- **OpenClaw costs**: `min_replicas=1` means $5–10/month even when idle
+- **Purge protection off in dev**: `main.tf` sets `purge_protection_enabled = false` — set `true` for production
 
-- Prompt injection detection in [safety.ts](src/agent/src/llm/safety.ts) - blocks patterns like "ignore previous instructions"
-- Input limit: 4000 characters; output sanitization redacts long alphanumeric tokens
-- Skills restricted to `/tmp` directory; dangerous commands blocked (rm -rf /, mkfs, fork bombs)
-- 30-second timeout on skill execution
-- TLS 1.2+ enforced; storage default-deny with Azure services bypass
+## Further Reading
 
-## Deployment
-
-Five options in deploy/: Terraform (recommended), Bicep, ARM, Azure CLI, PowerShell. Terraform variables in [terraform.tfvars.example](infra/terraform/terraform.tfvars.example).
-
-## Prerequisites
-
-- Azure CLI >= 2.50, Terraform >= 1.5, Node.js >= 20, Python >= 3.9
-- Azure Functions Core Tools >= 4.x
-- Azure OpenAI access + Telegram Bot Token
-- (Optional) OpenClaw installed: `npm install -g openclaw@latest`
+| Topic | Doc |
+|-------|-----|
+| Deployment & setup | [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) |
+| Operations | [docs/runbook.md](docs/runbook.md) |
+| Cost breakdown | [docs/COST.md](docs/COST.md) |
+| Security controls | [docs/SECURITY.md](docs/SECURITY.md), [docs/SECURITY-QUICKSTART.md](docs/SECURITY-QUICKSTART.md) |
+| OpenClaw on Container Apps | [docs/azure-container-apps.md](docs/azure-container-apps.md) |
+| Skills integration | [docs/SKILLS-INTEGRATION.md](docs/SKILLS-INTEGRATION.md) |
+| Gap analysis | [docs/GAP-ANALYSIS.md](docs/GAP-ANALYSIS.md) |

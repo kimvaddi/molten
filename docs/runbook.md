@@ -32,7 +32,7 @@ az containerapp update \
   --image <acr>.azurecr.io/moltbot-agent:<version>
 ```
 
-> **Note**: The Dockerfile uses `node:22-alpine` multi-stage build with Python 3 for skills execution. It copies `anthropic_executor.py` into the runtime image.
+> **Note**: The Dockerfile uses a SHA256-pinned `node:22-alpine` multi-stage build with Python 3 for skills execution. It copies `anthropic_executor.py` into the runtime image. Health check: `--start-period=30s --interval=2m`.
 
 ### Deploy/Update OpenClaw Gateway
 ```bash
@@ -54,6 +54,38 @@ az containerapp update --name molten-dev-openclaw --resource-group molten-dev-rg
 curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook?url=<FUNCTION_URL>"
 ```
 
+### Set WhatsApp Webhook
+Configure in the [Meta Business Platform](https://business.facebook.com/):
+1. Go to WhatsApp → Configuration → Callback URL
+2. Set URL to your Function App endpoint: `https://<func-app>.azurewebsites.net/api/whatsapp`
+3. Set Verify Token to the value stored in Key Vault (`whatsapp-verify-token`)
+4. Subscribe to `messages` events
+
+### Monitor Conversation Memory
+```bash
+# View conversation count in Table Storage
+az storage entity query \
+  --table-name conversations \
+  --account-name <storage> \
+  --auth-mode login \
+  --query "items | length(@)"
+
+# View a specific session's messages
+az storage entity query \
+  --table-name conversations \
+  --account-name <storage> \
+  --auth-mode login \
+  --filter "PartitionKey eq 'telegram-<chatId>'"
+```
+
+### Drain and Restart Agent (Graceful Shutdown)
+The agent handles SIGTERM/SIGINT gracefully — it finishes the current message before exiting.
+
+```bash
+# Trigger a new revision (which sends SIGTERM to old replicas)
+az containerapp update --name <app> --resource-group <rg> --set-env-vars "RESTART_TRIGGER=$(date +%s)"
+```
+
 ## Troubleshooting
 
 ### Agent Not Processing Messages
@@ -63,11 +95,20 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook?url=<FUNCTION_URL>"
    ```
 2. Check queue has messages:
    ```bash
-   az storage message peek --queue-name molten-work --account-name <storage>
+   az storage message peek --queue-name molten-work --account-name <storage> --auth-mode login
    ```
-3. Check agent logs:
+3. Check the poison (dead-letter) queue for failed messages:
+   ```bash
+   az storage message peek --queue-name molten-work-poison --account-name <storage> --auth-mode login
+   ```
+   Messages appear here after 3 failed processing attempts. Investigate via agent logs to determine why processing failed.
+4. Check agent logs:
    ```bash
    az containerapp logs show --name <app> --resource-group <rg>
+   ```
+5. Verify readiness — `/ready` returns 503 until OpenClaw + SkillsRegistry init completes:
+   ```bash
+   az containerapp exec --name <app> --resource-group <rg> --command "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ready"
    ```
 
 ### OpenClaw Gateway Not Connecting

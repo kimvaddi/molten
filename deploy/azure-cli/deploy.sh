@@ -21,6 +21,25 @@ ENVIRONMENT="dev"
 LOCATION="westus3"
 RESOURCE_GROUP="${PROJECT_NAME}-${ENVIRONMENT}-rg"
 
+# =============================================================================
+# Cleanup (--cleanup flag)
+# =============================================================================
+if [[ "${1:-}" == "--cleanup" ]]; then
+    echo ""
+    echo -e "\033[1;33m[WARN]\033[0m This will DELETE the entire resource group: $RESOURCE_GROUP"
+    echo -e "\033[1;33m[WARN]\033[0m All resources inside it will be permanently destroyed."
+    read -p "Type the resource group name to confirm: " CONFIRM_RG
+    if [ "$CONFIRM_RG" = "$RESOURCE_GROUP" ]; then
+        echo -e "\033[0;32m[INFO]\033[0m Deleting resource group $RESOURCE_GROUP..."
+        az group delete --name "$RESOURCE_GROUP" --yes --no-wait
+        echo -e "\033[0;32m[INFO]\033[0m Deletion initiated (runs in background). Verify with:"
+        echo "  az group show -n $RESOURCE_GROUP 2>/dev/null || echo 'Deleted'"
+    else
+        echo -e "\033[0;31m[ERROR]\033[0m Name mismatch — cleanup cancelled."
+    fi
+    exit 0
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -202,18 +221,16 @@ create_storage_account() {
         --min-tls-version TLS1_2 \
         --allow-blob-public-access false
     
-    # Create queue and blob container
-    STORAGE_KEY=$(az storage account keys list --account-name "$STORAGE_NAME" --query '[0].value' -o tsv)
-    
+    # Create queue and blob container (RBAC auth — no storage keys)
     az storage queue create \
         --name "molten-work" \
         --account-name "$STORAGE_NAME" \
-        --account-key "$STORAGE_KEY"
+        --auth-mode login
     
     az storage container create \
         --name "molten-configs" \
         --account-name "$STORAGE_NAME" \
-        --account-key "$STORAGE_KEY"
+        --auth-mode login
     
     log_info "Storage account created"
 }
@@ -498,6 +515,56 @@ register_telegram_webhook() {
 }
 
 # =============================================================================
+# End-to-End Verification
+# =============================================================================
+verify_deployment() {
+    FUNC_APP_NAME="${PROJECT_NAME}-${ENVIRONMENT}-func"
+    AGENT_NAME="${PROJECT_NAME}-${ENVIRONMENT}-agent"
+
+    log_info "Running end-to-end verification..."
+    local pass=0 fail=0
+
+    # 1. Function App health
+    local FUNC_URL="https://${FUNC_APP_NAME}.azurewebsites.net/api/health"
+    local FUNC_STATUS
+    FUNC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FUNC_URL" --max-time 15 2>/dev/null || echo "000")
+    if [[ "$FUNC_STATUS" =~ ^(200|401|404)$ ]]; then
+        log_info "  Function App reachable (HTTP $FUNC_STATUS)"
+        pass=$((pass+1))
+    else
+        log_warn "  Function App returned HTTP $FUNC_STATUS (may still be starting)"
+        fail=$((fail+1))
+    fi
+
+    # 2. Agent Container App running
+    local AGENT_STATE
+    AGENT_STATE=$(az containerapp show -n "$AGENT_NAME" -g "$RESOURCE_GROUP" --query "properties.runningStatus" -o tsv 2>/dev/null || echo "unknown")
+    if [ "$AGENT_STATE" = "Running" ] || [ "$AGENT_STATE" = "RunningSuccessfully" ]; then
+        log_info "  Agent Container App status: $AGENT_STATE"
+        pass=$((pass+1))
+    else
+        log_warn "  Agent Container App status: $AGENT_STATE (may need a few minutes)"
+        fail=$((fail+1))
+    fi
+
+    # 3. Key Vault accessible
+    KEY_VAULT_NAME="${PROJECT_NAME}-${ENVIRONMENT}-kv"
+    if az keyvault secret list --vault-name "$KEY_VAULT_NAME" --query "length(@)" -o tsv &>/dev/null; then
+        log_info "  Key Vault accessible"
+        pass=$((pass+1))
+    else
+        log_warn "  Key Vault not accessible (RBAC may still be propagating)"
+        fail=$((fail+1))
+    fi
+
+    echo ""
+    log_info "Verification: $pass passed, $fail warnings"
+    if [ $fail -gt 0 ]; then
+        log_warn "Some checks had warnings — resources may need a few minutes to fully start."
+    fi
+}
+
+# =============================================================================
 # Print Summary
 # =============================================================================
 print_summary() {
@@ -519,6 +586,17 @@ print_summary() {
     echo "  Telegram: https://${FUNC_APP_NAME}.azurewebsites.net/api/telegram"
     echo "  Slack: https://${FUNC_APP_NAME}.azurewebsites.net/api/slack"
     echo "  Discord: https://${FUNC_APP_NAME}.azurewebsites.net/api/discord"
+    echo ""
+    echo "Estimated Monthly Cost: ~\$5-10/month (free-tier eligible)"
+    echo "  Functions:          \$0 (Consumption plan, 1M free requests/month)"
+    echo "  Container Apps:     \$0 (scale-to-zero, 2M free requests/month)"
+    echo "  Storage (LRS):      ~\$0.50"
+    echo "  Key Vault:          ~\$0.03/10k operations"
+    echo "  Azure OpenAI:       ~\$1-5 depending on usage (S0 tier)"
+    echo "  App Insights:       \$0 (5 GB/month free)"
+    echo ""
+    echo "Cleanup:"
+    echo "  To delete all resources: ./deploy.sh --cleanup"
     echo ""
     echo "Verify your bot:"
     echo "  1. Open Telegram and find your bot by username"
@@ -563,7 +641,8 @@ main() {
     deploy_function_code
     deploy_agent_container
     register_telegram_webhook
+    verify_deployment
     print_summary
 }
 
-main
+main "$@"

@@ -53,6 +53,32 @@ variable "enable_discord" {
   default     = false
 }
 
+variable "enable_whatsapp" {
+  description = "Enable WhatsApp Business Cloud API integration"
+  type        = bool
+  default     = false
+}
+
+variable "whatsapp_verify_token" {
+  description = "WhatsApp webhook verification token (you choose this value)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "whatsapp_api_token" {
+  description = "WhatsApp Business Cloud API token from Meta"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "whatsapp_phone_number_id" {
+  description = "WhatsApp Business phone number ID from Meta"
+  type        = string
+  default     = ""
+}
+
 variable "function_plan_sku" {
   description = "Function App plan SKU (Y1=Consumption/Free, B1=Basic)"
   type        = string

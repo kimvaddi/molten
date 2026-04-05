@@ -18,7 +18,7 @@ A self-hosted personal AI agent running on Azure's free tier services — inspir
 ## 🏗️ Architecture
 
 ```
- User ──► Telegram / Slack / Discord
+ User ──► Telegram / Slack / Discord / WhatsApp
               │
               ▼
     ┌──────────────────┐     ┌────────────────────┐
@@ -52,7 +52,9 @@ Key features of the current architecture:
 - **Tool-calling loop**: Agent calls Azure OpenAI with function definitions, executes tool results, loops up to 5 rounds
 - **429 retry with backoff**: Exponential backoff respecting `Retry-After` headers for rate-limited S0 tier
 - **OpenClaw fallback**: If OpenClaw Gateway is unavailable, seamlessly falls back to direct Azure OpenAI
-- **Queue-based processing**: Messages always deleted from queue (no retry stampede)
+- **Queue-based processing**: DLQ after 3 failures; exponential backoff (2s→30s) for scale-to-zero efficiency
+- **Conversation memory**: Last 20 messages per session (24h TTL) loaded from Table Storage before each LLM call
+- **Graceful shutdown**: SIGTERM/SIGINT handlers drain in-flight messages
 
 See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 
@@ -86,6 +88,8 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 - Telegram Bot Token (from [@BotFather](https://t.me/botfather))
 - *(Optional)* [Tavily API key](https://tavily.com/) for web search (~$0.01/search)
 - *(Optional)* OpenClaw for enhanced skills — deployed as Azure Container App (see `infra/terraform/main.tf`)
+
+> **Cost disclaimer**: Molten targets <$10/month using Azure free tiers (Functions, Container Apps, 5GB App Insights). Azure OpenAI (S0 tier, ~$7.50 for 500K tokens) is the primary cost driver. Scale-to-zero Container Apps and Consumption Functions ensure you pay nothing at idle. See the [cost breakdown](#-cost-breakdown-target-10month) and [docs/COST.md](docs/COST.md) for details.
 
 > **New to Azure or Molten?** See [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) for a complete walkthrough from zero to working bot.
 
@@ -236,7 +240,7 @@ molten/
 │   │       ├── index.ts        # Express server, webhook endpoints, queue enqueue
 │   │       ├── queue-worker.ts # Queue consumer, tool-calling loop, OpenClaw fallback
 │   │       ├── openclaw/       # OpenClaw Gateway WebSocket client (10s timeout)
-│   │       ├── integrations/   # Telegram, Slack, Discord platform handlers
+│   │       ├── integrations/   # Telegram, Slack, Discord, WhatsApp platform handlers
 │   │       ├── llm/            # Azure OpenAI (callModelWithTools, 429 retry, safety)
 │   │       ├── skills/         # Skills registry + anthropic_executor.py
 │   │       ├── state/          # Blob store + Table store

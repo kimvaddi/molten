@@ -222,6 +222,62 @@ variable "keyvault_network_default_action" {
 
 ---
 
+## Phase 2 Security Enhancements (March 22, 2026)
+
+Following the gap analysis (see [GAP-ANALYSIS.md](GAP-ANALYSIS.md)), additional security and reliability hardening was implemented:
+
+### Container Security
+
+| Enhancement | Details |
+|-------------|---------|
+| **Dockerfile SHA256 pinning** | Base image `node:22-alpine` pinned to digest — builds are fully reproducible |
+| **OCI labels** | `org.opencontainers.image.source`, `org.opencontainers.image.version` for traceability |
+| **HEALTHCHECK tuning** | `--start-period=30s --interval=2m` — prevents premature restarts during cold start |
+| **Non-root user** | Container runs as unprivileged user |
+
+### Message Reliability
+
+| Enhancement | Details |
+|-------------|---------|
+| **Dead-letter queue** | Messages with `dequeueCount > 3` moved to `molten-work-poison` — no message loss |
+| **Graceful shutdown** | SIGTERM/SIGINT handlers drain in-flight messages before exit |
+| **Exponential backoff** | Queue polling 2s → 30s idle, supports Container App scale-to-zero |
+| **Readiness gating** | `/ready` returns 503 until OpenClaw + SkillsRegistry initialization completes |
+
+### ACR Authentication
+
+| Enhancement | Details |
+|-------------|---------|
+| **Admin credentials disabled** | `admin_enabled = false` — no shared secrets |
+| **Managed Identity auth** | `AcrPull` role assigned to agent Container App MI |
+| **Identity-based registry** | Container App uses MI for image pulls, not passwords |
+
+### WhatsApp Webhook Security
+
+| Enhancement | Details |
+|-------------|---------|
+| **Meta signature verification** | `X-Hub-Signature-256` HMAC-SHA256 validation on every webhook request |
+| **Verify token challenge** | Hub challenge/response for webhook registration |
+| **Key Vault secrets** | `whatsapp-verify-token`, `whatsapp-api-token`, `whatsapp-phone-number-id` stored in Key Vault |
+
+### Conversation Memory Audit Trail
+
+| Enhancement | Details |
+|-------------|---------|
+| **Table Storage persistence** | All conversation messages stored with timestamps |
+| **24h TTL** | Automatic cleanup of old conversation data |
+| **Session isolation** | Partition key `{channel}-{chatId}` prevents cross-session data leakage |
+
+### Unit Test Coverage
+
+| Test Suite | Tests | Coverage |
+|------------|-------|----------|
+| `safety.test.ts` | Prompt injection detection, input length limits, output sanitization | 8 tests |
+| `cache.test.ts` | TTL expiry, cache hit/miss, eviction | 7 tests |
+| `queue-worker.test.ts` | Message parsing (base64/raw), DLQ threshold, backoff | 5 tests |
+
+---
+
 ## Compliance Status
 
 | Framework | Status | Notes |

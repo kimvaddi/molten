@@ -21,6 +21,9 @@ Molten is a serverless AI agent running on Azure's free tier, optimized for cost
                                                           ┌────┴─────┐
                                                           │ Discord  │
                                                           └────┬─────┘
+                                                          ┌────┴─────┐
+                                                          │ WhatsApp │
+                                                          └────┬─────┘
                                                                │ reply
 ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
 │ Agent Runtime (Container Apps Environment: molten-dev-cae)                                  │
@@ -75,6 +78,7 @@ Molten is a serverless AI agent running on Azure's free tier, optimized for cost
   - `HttpTelegram` - Telegram bot webhook
   - `HttpSlack` - Slack events webhook  
   - `HttpDiscord` - Discord interactions
+  - `HttpWhatsApp` - WhatsApp Business Cloud API webhook (Meta signature verification)
   - `HttpAdmin` - Admin API endpoints
 - **Responsibilities**:
   - Validate incoming requests (JWT/signature)
@@ -86,8 +90,9 @@ Molten is a serverless AI agent running on Azure's free tier, optimized for cost
 - **SKU**: Standard LRS - **FREE**: 5GB/month
 - **Components**:
   - **Blob**: Session data, configs, user preferences
-  - **Table**: Conversation metadata, usage tracking
-  - **Queue**: Async work items (optional, for background tasks)
+  - **Table**: Conversation history (last 20 messages per session, 24h TTL via `conversationStore.ts`), usage tracking
+  - **Queue**: `molten-work` — async work items dispatched by Functions
+  - **Queue**: `molten-work-poison` — dead-letter queue for messages that fail 3+ times
 
 ### Azure Key Vault
 - **Purpose**: Secrets management
@@ -97,6 +102,8 @@ Molten is a serverless AI agent running on Azure's free tier, optimized for cost
   - `azure-openai-api-key` - OpenAI API key
   - `telegram-bot-token` - Telegram bot token
   - `tavily-api-key` - Web search API (optional)
+  - `whatsapp-api-token` - WhatsApp Business API token (optional)
+  - `whatsapp-phone-number-id` - WhatsApp phone number ID (optional)
 - **Access**: Managed Identity only (no keys in code)
 
 ### Azure OpenAI
@@ -113,15 +120,20 @@ Molten is a serverless AI agent running on Azure's free tier, optimized for cost
 
 ### MoltBot Agent (Container App)
 - **Purpose**: Queue consumer, LLM orchestration, skills execution
-- **Image**: `moltbot-agent` built via ACR Tasks (`node:22-alpine` + `python3`)
-- **Deployment**: Azure Container App, scale-to-zero (0.25 vCPU, 0.5Gi)
+- **Image**: `moltbot-agent` built via ACR Tasks (`node:22-alpine` pinned to SHA256 digest + `python3`)
+- **Dockerfile**: Multi-stage build, `npm ci`, non-root user, OCI labels, `HEALTHCHECK --start-period=30s --interval=2m`
+- **Deployment**: Azure Container App, scale-to-zero (0.25 vCPU, 0.5Gi), Managed Identity with AcrPull role
 - **Endpoints**: `/webhook/telegram`, `/webhook/slack`, `/healthz`, `/ready`, `/admin/status`
+- **Readiness**: `/ready` returns 503 until OpenClaw + SkillsRegistry initialization completes (`setReady()`)
+- **Graceful shutdown**: SIGTERM/SIGINT handlers drain in-flight messages before exit
 - **Key modules**:
-  - `queue-worker.ts` — polls Storage Queue, runs tool-calling loop, always deletes messages in `finally` block
+  - `queue-worker.ts` — polls Storage Queue with exponential backoff (2s idle → 30s max, resets on message); DLQ: messages with dequeueCount > 3 moved to `molten-work-poison`; loads conversation history before LLM call; persists user + assistant messages
+  - `conversationStore.ts` — Table Storage-backed conversation memory, last 20 messages per session, 24h TTL
   - `azureOpenAI.ts` — `callModelWithTools()` with 429 retry (exponential backoff, max 3 retries)
   - `skillsRegistry.ts` — 5 skills (bash, text_editor, web-search, calendar-create, email-send)
   - `gateway-client.ts` — OpenClaw WebSocket client with 10s connection timeout
   - `index.ts` — Express server with crypto polyfill for Node.js compatibility
+  - `whatsapp.ts` — WhatsApp reply sender via Meta Graph API (Key Vault config)
 
 ### OpenClaw Gateway (Optional)
 - **Purpose**: Enhanced AI agent capabilities via WebSocket
@@ -174,9 +186,9 @@ Molten is a serverless AI agent running on Azure's free tier, optimized for cost
    - Results fed back to LLM as tool messages
    - Loop repeats up to `MAX_TOOL_ROUNDS = 5` until LLM returns final text
    - **429 rate limit handling**: Exponential backoff with `Retry-After` header respect (max 3 retries)
-9. **Queue message cleanup** → Message always deleted in `finally` block (prevents retry stampede)
+9. **Queue message handling** → On success: delete message. On dequeueCount > 3: move to `molten-work-poison` dead-letter queue. On transient failure: leave for retry with exponential backoff.
 10. **Cache response** → Store for future hits (5-min TTL)
-11. **Send reply** → Back to messaging platform (Telegram, Slack, or Discord)
+11. **Send reply** → Back to messaging platform (Telegram, Slack, Discord, or WhatsApp)
 12. **Log telemetry** → Application Insights
 
 ## Skills Architecture
@@ -220,7 +232,7 @@ Molten is a serverless AI agent running on Azure's free tier, optimized for cost
 ┌────────────────────────────────────────┐
 │      User receives response            │
 │   (always, even on error: "Sorry...")  │
-│   Queue message deleted in finally {}  │
+│   DLQ after 3 failures; deleted on OK  │
 └────────────────────────────────────────┘
 ```
 

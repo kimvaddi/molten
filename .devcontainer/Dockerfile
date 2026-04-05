@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/typescript-node:18
+FROM mcr.microsoft.com/devcontainers/typescript-node:22
 
 # Install Azure Functions Core Tools
 RUN curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg \

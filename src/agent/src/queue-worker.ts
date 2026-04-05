@@ -4,12 +4,15 @@ import { callModel, callModelWithTools, SYSTEM_PROMPT, ChatMessage } from "./llm
 import { sendTelegramMessage } from "./integrations/telegram";
 import { sendSlackMessage } from "./integrations/slack";
 import { sendDiscordMessage } from "./integrations/discord";
+import { sendWhatsAppMessage } from "./integrations/whatsapp";
 import { checkSafety } from "./llm/safety";
 import { initOpenClaw, getOpenClawClient, OpenClawGatewayClient } from "./openclaw";
 import { getSkillsRegistry, SkillsRegistry } from "./skills/skillsRegistry";
+import { loadConversation, appendMessage } from "./state/conversationStore";
+import { setReady } from "./index";
 
 interface WorkItem {
-  channel: "telegram" | "slack" | "discord";
+  channel: "telegram" | "slack" | "discord" | "whatsapp";
   chatId: number | string;
   userId?: number | string;
   username?: string;
@@ -17,8 +20,16 @@ interface WorkItem {
   timestamp: number;
 }
 
-const POLL_INTERVAL_MS = 2000;
 const MAX_TOOL_ROUNDS = 5;
+const MAX_DEQUEUE_COUNT = 3;
+
+// Exponential backoff: 2s → 4s → 8s → 16s → 30s (cap)
+const POLL_MIN_MS = 2000;
+const POLL_MAX_MS = 30000;
+let currentPollInterval = POLL_MIN_MS;
+
+// Graceful shutdown
+let shuttingDown = false;
 
 // OpenClaw client instance (initialized once)
 let openClawClient: OpenClawGatewayClient | null = null;
@@ -30,15 +41,17 @@ let skillsRegistry: SkillsRegistry | null = null;
  * Process a message through OpenClaw Gateway or Azure OpenAI with function-calling
  */
 async function processMessage(item: WorkItem): Promise<string> {
+  const sessionId = `${item.channel}-${item.chatId}`;
+
   // Try OpenClaw first if enabled and connected
   if (openClawClient?.isConnected()) {
     try {
-      console.log(`Routing to OpenClaw Gateway for ${item.channel}:${item.chatId}`);
+      console.log(`Routing to OpenClaw Gateway for ${sessionId}`);
       
       const response = await openClawClient.sendAgentMessage(item.text, {
         channel: item.channel,
         userId: String(item.userId || item.chatId),
-        sessionId: `${item.channel}-${item.chatId}`,
+        sessionId,
       });
 
       if (response.status === "completed" && response.message) {
@@ -53,16 +66,23 @@ async function processMessage(item: WorkItem): Promise<string> {
   }
 
   // Azure OpenAI with function-calling loop
-  console.log(`Using Azure OpenAI with skills for ${item.channel}:${item.chatId}`);
+  console.log(`Using Azure OpenAI with skills for ${sessionId}`);
 
   // Get skills as OpenAI tool definitions
   const registry = skillsRegistry || await getSkillsRegistry();
   const tools = registry.getSkillsForLLM();
 
+  // Load conversation history from Table Storage
+  const history = await loadConversation(sessionId);
+
   const messages: ChatMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: item.text },
+    { role: "system" as const, content: SYSTEM_PROMPT },
+    ...history,
+    { role: "user" as const, content: item.text },
   ];
+
+  // Persist user message
+  await appendMessage(sessionId, "user", item.text);
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const choice = await callModelWithTools(messages, tools);
@@ -103,14 +123,18 @@ async function processMessage(item: WorkItem): Promise<string> {
       }
     } else {
       // Final text response — no more tool calls
-      return choice.message.content || "I couldn't generate a response.";
+      const reply = choice.message.content || "I couldn't generate a response.";
+      await appendMessage(sessionId, "assistant", reply);
+      return reply;
     }
   }
 
   // Hit max rounds — get a final text response without tools
   console.warn(`Reached max tool rounds (${MAX_TOOL_ROUNDS}), forcing final response`);
   const finalChoice = await callModelWithTools(messages);
-  return finalChoice.message.content || "I couldn't generate a response.";
+  const finalReply = finalChoice.message.content || "I couldn't generate a response.";
+  await appendMessage(sessionId, "assistant", finalReply);
+  return finalReply;
 }
 
 /**
@@ -126,6 +150,9 @@ async function sendResponse(item: WorkItem, response: string): Promise<void> {
       break;
     case "discord":
       await sendDiscordMessage(item.chatId as string, response);
+      break;
+    case "whatsapp":
+      await sendWhatsAppMessage(item.chatId as string, response);
       break;
     default:
       console.warn(`Unknown channel: ${item.channel}`);
@@ -159,26 +186,58 @@ export async function consumeQueue(): Promise<void> {
     console.warn("Skills registry initialization failed:", err);
   }
 
+  // Mark the agent as ready for traffic
+  setReady();
+
   const credential = new DefaultAzureCredential();
   const queueUrl = `https://${storageAccountName}.queue.core.windows.net/${queueName}`;
+  const poisonQueueUrl = `https://${storageAccountName}.queue.core.windows.net/${queueName}-poison`;
   const queueClient = new QueueClient(queueUrl, credential);
+  const poisonQueueClient = new QueueClient(poisonQueueUrl, credential);
+
+  // Graceful shutdown handlers
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log("Received shutdown signal, draining current message...");
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   console.log(`Queue worker started, polling ${queueName}`);
 
-  while (true) {
+  while (!shuttingDown) {
     try {
       const messages = await queueClient.receiveMessages({
         numberOfMessages: 16,
         visibilityTimeout: 30,
       });
 
+      if (messages.receivedMessageItems.length > 0) {
+        // Reset backoff when messages found
+        currentPollInterval = POLL_MIN_MS;
+      } else {
+        // Exponential backoff when idle
+        currentPollInterval = Math.min(currentPollInterval * 2, POLL_MAX_MS);
+      }
+
       for (const message of messages.receivedMessageItems) {
+        if (shuttingDown) break;
+
         let item: WorkItem | null = null;
         try {
+          // Dead-letter after MAX_DEQUEUE_COUNT attempts
+          if (message.dequeueCount > MAX_DEQUEUE_COUNT) {
+            console.warn(`Message ${message.messageId} exceeded ${MAX_DEQUEUE_COUNT} retries, moving to poison queue`);
+            await poisonQueueClient.sendMessage(message.messageText);
+            await queueClient.deleteMessage(message.messageId, message.popReceipt);
+            continue;
+          }
+
           const payload = Buffer.from(message.messageText, "base64").toString("utf8");
           item = JSON.parse(payload);
 
-          console.log(`Processing ${item!.channel} message from ${item!.chatId}`);
+          console.log(`Processing ${item!.channel} message from ${item!.chatId} (attempt ${message.dequeueCount})`);
 
           // Safety check (always applied, regardless of backend)
           const safetyResult = await checkSafety(item!.text);
@@ -193,8 +252,11 @@ export async function consumeQueue(): Promise<void> {
 
           // Send response back to channel
           await sendResponse(item!, response);
+
+          // Only delete on success
+          await queueClient.deleteMessage(message.messageId, message.popReceipt);
         } catch (err: any) {
-          console.error("Error processing:", err);
+          console.error(`Error processing message ${message.messageId}:`, err);
           // Send error reply so user knows something went wrong
           if (item) {
             try {
@@ -203,19 +265,16 @@ export async function consumeQueue(): Promise<void> {
               console.error("Failed to send error reply:", sendErr);
             }
           }
-        } finally {
-          // Always delete — never let a failed message retry and cause a stampede
-          try {
-            await queueClient.deleteMessage(message.messageId, message.popReceipt);
-          } catch (delErr) {
-            console.error("Failed to delete queue message:", delErr);
-          }
+          // Do NOT delete — let visibility timeout expire for automatic retry
         }
       }
     } catch (err) {
       console.error("Poll error:", err);
     }
 
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    await new Promise((r) => setTimeout(r, currentPollInterval));
   }
+
+  console.log("Queue worker shut down gracefully");
+  process.exit(0);
 }

@@ -34,6 +34,14 @@ chmod +x deploy/azure-cli/deploy.sh
 ./deploy/azure-cli/deploy.sh
 ```
 
+### Cleanup
+
+```bash
+./deploy/azure-cli/deploy.sh --cleanup
+```
+
+The `--cleanup` flag removes the entire resource group and all contained resources. You'll be prompted for confirmation.
+
 ### PowerShell (Windows)
 
 ```powershell
@@ -68,6 +76,25 @@ The script will interactively prompt for:
 | Azure OpenAI API Key | API key for Azure OpenAI | If manual |
 | Azure OpenAI Deployment | Model deployment name | No (default: gpt-4o-mini) |
 | Telegram Bot Token | From [@BotFather](https://t.me/botfather) | No (webhook skipped if empty) |
+| WhatsApp Verify Token | Custom verification string for Meta webhook | No (WhatsApp skipped if empty) |
+| WhatsApp API Token | From Meta Business Platform | No |
+| WhatsApp Phone Number ID | From Meta Business Platform | No |
+
+## Security
+
+- Storage access uses `--auth-mode login` (RBAC) — no shared account keys
+- All secrets stored in Azure Key Vault with Managed Identity access
+- The script runs `verify_deployment()` at the end to confirm the agent health endpoint responds
+
+## Estimated Cost
+
+| Resource | Monthly Cost |
+|----------|-------------|
+| Storage Account (LRS) | $0 (free tier) |
+| Azure Functions (Consumption) | $0 (free tier) |
+| Container App (free tier) | $0–$5 |
+| Azure OpenAI (S0) | $1–$5 (usage-based) |
+| **Total** | **~$1–$10/month** |
 
 ## Customization
 
@@ -81,6 +108,12 @@ LOCATION="westus3"
 
 ## Cleanup
 
+Remove all deployed resources:
+
 ```bash
+# Using the script's built-in cleanup
+./deploy/azure-cli/deploy.sh --cleanup
+
+# Or manually
 az group delete --name molten-dev-rg --yes --no-wait
 ```

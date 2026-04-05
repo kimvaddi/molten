@@ -17,7 +17,14 @@ app.use(express.json());
 
 // Health check endpoint (used by Container Apps)
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
-app.get("/ready", (_req, res) => res.status(200).send("ready"));
+
+// Readiness probe — gated on initialization of OpenClaw + Skills Registry
+let isReady = false;
+export function setReady() { isReady = true; }
+app.get("/ready", (_req, res) => {
+  if (isReady) return res.status(200).send("ready");
+  return res.status(503).send("initializing");
+});
 
 // ============ WEBHOOK ENDPOINTS ============
 // These replace Azure Functions (blocked by enterprise quota)

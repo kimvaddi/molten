@@ -38,17 +38,30 @@ By participating in this project, you agree to maintain a respectful and inclusi
 git clone https://github.com/YOUR_USERNAME/molten.git
 cd molten
 
-# Install dependencies
-cd src/functions && npm install
+# Agent (Express server + queue worker)
+cd src/agent && npm install
+npm run dev          # ts-node-dev with respawn
+npm test             # Jest (safety, cache, queue-worker)
 
-# Run locally
-func start
+# Functions (webhook handlers)
+cd src/functions && npm install
+npm run build
+func start           # Requires Azure Functions Core Tools >= 4.x
+
+# Local dev with Azurite (optional)
+docker compose -f docker-compose.dev.yml up
 
 # Validate Terraform
 cd infra/terraform
 terraform init
 terraform validate
 ```
+
+### Testing Requirements
+
+- Run `npm test` in `src/agent/` before submitting — Jest tests cover safety filters, cache TTL, and queue-worker parsing
+- Run `terraform validate` for any infrastructure changes
+- Target >80% coverage for new code (current suites: `safety.test.ts`, `cache.test.ts`, `queue-worker.test.ts`)
 
 ### Commit Message Format
 
